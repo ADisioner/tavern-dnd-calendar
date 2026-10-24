@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {spawnSync} from 'node:child_process';
+const root=process.cwd(),destination=path.resolve(root,'../checkpoints');
+fs.mkdirSync(destination,{recursive:true});
+const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+const label=(process.argv[2]||'source').replace(/[^a-z0-9-]/gi,'-');
+const archive=path.join(destination,`${stamp}-${label}.tar.gz`);
+const result=spawnSync('tar',['-czf',archive,'--exclude=node_modules','--exclude=.git','--exclude=.sites-runtime','--exclude=.wrangler','--exclude=.vinext','--exclude=.next','--exclude=dist','--exclude=outputs','--exclude=.env*','--exclude=.dev.vars*','--exclude=*.tsbuildinfo','.'],{cwd:root,stdio:'inherit'});
+if(result.status!==0)throw new Error('Checkpoint failed');
+fs.appendFileSync(path.join(destination,'README.md'),`\n- ${new Date().toISOString()} — ${label}: ${path.basename(archive)}\n`);
+console.log(archive);
