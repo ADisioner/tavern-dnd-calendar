@@ -75,7 +75,7 @@ export default function CalendarApp(){
   async function onSubmit(e:FormEvent<HTMLFormElement>){
     e.preventDefault();const form=new FormData(e.currentTarget);
     if(modal==='auth'){
-      setBusy(true);setError('');try{const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:authMode,login:form.get('login'),password:form.get('password'),name:form.get('name')})}),v=await r.json() as {error?:string};if(!r.ok)throw new Error(v.error);setSetup(false);await load();close();notify(authMode==='register'?'Добро пожаловать в Таверну!':'Вы вошли в аккаунт.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}return;
+      setBusy(true);setError('');try{const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:authMode,login:form.get('login'),password:form.get('password'),...(authMode==='register'?{name:form.get('name')||undefined}:{})})}),v=await r.json() as {error?:string};if(!r.ok)throw new Error(v.error);setSetup(false);await load();close();notify(authMode==='register'?'Добро пожаловать в Таверну!':'Вы вошли в аккаунт.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}return;
     }
     if(modal==='create'||modal==='join'){if(await mutate(modal==='create'?'create':'join',{name,timezone:zone,title})){close();notify(modal==='create'?'Кампания создана. Пригласите свою группу!':'Вы присоединились к группе.');}return;}
     if(modal==='availability'){

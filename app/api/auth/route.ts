@@ -31,7 +31,8 @@ export async function POST(request:NextRequest){
       await db.delete(logins).where(eq(logins.userId,user.id));(await cookies()).delete(COOKIE);return reply({ok:true});
     }
     if(!['register','login'].includes(data.action))return reply({error:'Неизвестное действие.'},400);
-    const input=z.object({login:z.string().trim().min(3).max(32).regex(/^[\p{L}\p{N}_-]+$/u),password:z.string().min(4).max(128),name:z.string().trim().max(50).optional()}).parse(data);
+    const input=z.object({login:z.string().trim().min(3).max(32).regex(/^[\p{L}\p{N}_-]+$/u),password:z.string().min(4).max(128)}).parse(data);
+    const registrationName=data.action==='register'?z.string().trim().max(50).nullish().parse(data.name):undefined;
     const login=input.login.toLocaleLowerCase('ru-RU');
     const now=Date.now(),key=await digest((request.headers.get('cf-connecting-ip')??'local')+':auth');
     const limit=await db.insert(authLimits).values({key,count:1,expires:now+900000}).onConflictDoUpdate({target:authLimits.key,set:{count:sql`CASE WHEN expires<${now} THEN 1 ELSE count+1 END`,expires:sql`CASE WHEN expires<${now} THEN ${now+900000} ELSE expires END`}}).returning().get();
@@ -41,7 +42,7 @@ export async function POST(request:NextRequest){
       if(record)return reply({error:'Этот логин уже занят.'},409);
       const salt=randomToken(),hash=await passwordHash(input.password,salt),id=crypto.randomUUID();
       // A single database statement assigns the initial admin without a signup race.
-      await db.run(sql`INSERT INTO users (id,login,name,password_hash,salt,role,disabled,created_at) SELECT ${id},${login},${input.name||input.login},${hash},${salt},CASE WHEN (SELECT COUNT(*) FROM users)=0 THEN 'admin' ELSE 'player' END,0,${now}`);
+      await db.run(sql`INSERT INTO users (id,login,name,password_hash,salt,role,disabled,created_at) SELECT ${id},${login},${registrationName||input.login},${hash},${salt},CASE WHEN (SELECT COUNT(*) FROM users)=0 THEN 'admin' ELSE 'player' END,0,${now}`);
       record=await db.select().from(users).where(eq(users.id,id)).get();
     }else{
       const hash=await passwordHash(input.password,record?.salt??'no-such-user-salt');

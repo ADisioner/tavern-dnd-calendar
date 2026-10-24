@@ -21,6 +21,9 @@ try{
     const result=await call(clients[i],'/api/auth',{action:'register',login:`qa_${suffix}_${i}`,password,name:`QA ${i}`});clients[i].id=result.user.id;
     assert.equal(result.user.role,i===0?'admin':'player');
   }
+  // The browser login form previously sent name:null even though it has no name field.
+  await call(clients[0],'/api/auth',{action:'login',login:`qa_${suffix}_0`,password,name:null});
+  assert.equal((await call(clients[0],'/api/auth')).user.id,clients[0].id);
   await call(clients[1],'/api/admin',undefined,403);
   await call(clients[1],'/api/auth',{action:'login',login:`qa_${suffix}_1`,password:'wrong-password'},401);
   const created=await call(clients[0],'/api/calendar',{action:'create',title:'QA private campaign',name:'QA master',timezone:'Europe/Moscow'});campaign=created.campaign;
