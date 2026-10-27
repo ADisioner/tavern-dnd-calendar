@@ -8,7 +8,7 @@ process.stdin.on('data',async chunk=>{
   raw+=chunk.toString();if(!raw.includes('\n')&&!raw.includes('\r'))return;if(process.stdin.isTTY)process.stdin.setRawMode(false);process.stdin.pause();
   try{
     const input=JSON.parse(raw.trim()),origin=new URL(input.url).origin;
-    if(origin!=='https://tavern-dnd-calendar.auroraroot21.chatgpt.site')throw new Error('Unexpected destination.');
+    if(origin!=='https://tavern-dnd-party-calendar.auroraroot21.chatgpt.site')throw new Error('Unexpected destination.');
     const headers={'OAI-Sites-Authorization':`Bearer ${input.bearer}`,'Content-Type':'application/json',Origin:origin};
     const status=await fetch(origin+'/api/auth',{headers,redirect:'error'});
     if(!status.ok)throw new Error(`Auth check failed: ${status.status}`);
@@ -19,7 +19,7 @@ process.stdin.on('data',async chunk=>{
     if(!r.ok)throw new Error(`Admin setup failed: ${r.status}`);
     const result=await r.json();if(result.user?.role!=='admin')throw new Error('Admin role not established.');
     const dir=path.join(process.env.USERPROFILE,'.codex','private');fs.mkdirSync(dir,{recursive:true});
-    const file=path.join(dir,'tavern-admin.txt');
+    const file=path.join(dir,'tavern-party-admin.txt');
     fs.writeFileSync(file,`Таверна — первоначальный аккаунт администратора\n\nСайт: ${origin}\nЛогин: admin\nПароль: ${password}\n\nПосле входа: Ваш аккаунт → Изменить пароль.\nНе отправляйте этот файл игрокам.\n`,{encoding:'utf8',mode:0o600,flag:'wx'});
     console.log(JSON.stringify({created:true,login:'admin',password_file:file}));process.exit(0);
   }catch(e){console.error(e.message);process.exit(1);}

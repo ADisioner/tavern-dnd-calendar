@@ -37,6 +37,58 @@ export function dateKey(time: number, timezone: string) {
 export function timeText(time: number, timezone: string) {
   return new Intl.DateTimeFormat('ru-RU',{timeZone:timezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(time);
 }
+const offsetFormatters = new Map<string, Intl.DateTimeFormat>();
+function utcOffsetMinutes(time: number, timezone: string) {
+  let formatter = offsetFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', {timeZone:timezone,timeZoneName:'shortOffset'});
+    offsetFormatters.set(timezone, formatter);
+  }
+  const value = formatter.formatToParts(time).find(part=>part.type==='timeZoneName')!.value;
+  const match = /^GMT(?:([+-])(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?)?$/.exec(value);
+  if (!match) throw new Error('Unsupported timezone offset: '+value);
+  return (match[1]==='-'?-1:1)*(Number(match[2]??0)*60+Number(match[3]??0)+Number(match[4]??0)/60);
+}
+export function moscowOffsetMinutes(time: number, timezone: string) {
+  return utcOffsetMinutes(time,timezone)-utcOffsetMinutes(time,'Europe/Moscow');
+}
+export function moscowOffsetLabel(time: number, timezone: string) {
+  const offset=moscowOffsetMinutes(time,timezone),absolute=Math.abs(Math.round(offset*60));
+  const minutes=Math.floor(absolute%3600/60),seconds=absolute%60;
+  return `${offset<0?'-':'+'}${Math.floor(absolute/3600)}${minutes||seconds?':'+String(minutes).padStart(2,'0'):''}${seconds?':'+String(seconds).padStart(2,'0'):''} МСК`;
+}
+const timezoneCities: Record<string,string> = {
+  'UTC':'Всемирное время','Europe/Moscow':'Москва','Europe/Kaliningrad':'Калининград',
+  'Europe/Samara':'Самара','Europe/Saratov':'Саратов','Europe/Astrakhan':'Астрахань',
+  'Europe/Ulyanovsk':'Ульяновск','Europe/Kirov':'Киров','Europe/Volgograd':'Волгоград',
+  'Europe/Simferopol':'Симферополь','Asia/Yekaterinburg':'Екатеринбург','Asia/Omsk':'Омск',
+  'Asia/Novosibirsk':'Новосибирск','Asia/Krasnoyarsk':'Красноярск','Asia/Barnaul':'Барнаул',
+  'Asia/Tomsk':'Томск','Asia/Novokuznetsk':'Новокузнецк','Asia/Irkutsk':'Иркутск',
+  'Asia/Chita':'Чита','Asia/Yakutsk':'Якутск','Asia/Vladivostok':'Владивосток',
+  'Asia/Khabarovsk':'Хабаровск','Asia/Magadan':'Магадан','Asia/Sakhalin':'Сахалин',
+  'Asia/Kamchatka':'Камчатка','Asia/Anadyr':'Анадырь','Europe/Minsk':'Минск',
+  'Europe/Kyiv':'Киев','Europe/Kiev':'Киев','Europe/Berlin':'Берлин','Europe/London':'Лондон',
+  'Europe/Paris':'Париж','Europe/Warsaw':'Варшава','Europe/Prague':'Прага',
+  'Europe/Istanbul':'Стамбул','Asia/Tbilisi':'Тбилиси','Asia/Yerevan':'Ереван',
+  'Asia/Almaty':'Алматы','Asia/Tashkent':'Ташкент','Asia/Bishkek':'Бишкек',
+  'Asia/Dubai':'Дубай','Asia/Jerusalem':'Иерусалим','Asia/Tokyo':'Токио',
+  'Asia/Shanghai':'Шанхай','Asia/Bangkok':'Бангкок','Asia/Seoul':'Сеул',
+  'Asia/Kathmandu':'Катманду','Asia/Katmandu':'Катманду','Asia/Kolkata':'Калькутта','Asia/Calcutta':'Калькутта',
+  'America/New_York':'Нью-Йорк','America/Chicago':'Чикаго','America/Los_Angeles':'Лос-Анджелес',
+  'America/Toronto':'Торонто','Australia/Sydney':'Сидней','Pacific/Auckland':'Окленд',
+};
+export function timezoneLabel(time: number, timezone: string) {
+  return `${moscowOffsetLabel(time,timezone)} · ${timezoneCities[timezone]??timezone.split('/').at(-1)!.replaceAll('_',' ')}`;
+}
+export function intervalTouchesDay(interval: Interval, day: string, timezone: string) {
+  return interval.end > interval.start && dateKey(interval.start, timezone) <= day && dateKey(interval.end - 1, timezone) >= day;
+}
+// Keep the UTC identity of a suggestion when a DST transition repeats a wall time.
+// Edited wall times retain the documented earlier-occurrence policy.
+export function resolveLocalStart(value: string, timezone: string, preferredInstant: number | null = null) {
+  if (preferredInstant !== null && `${dateKey(preferredInstant, timezone)}T${timeText(preferredInstant, timezone)}` === value) return preferredInstant;
+  return zonedToUtc(value, timezone);
+}
 // Check offsets on both sides of timezone transitions, including fractional offsets.
 // For a repeated DST clock time choose the earlier instant; reject nonexistent times.
 export function zonedToUtc(value: string, timezone: string): number | null {
