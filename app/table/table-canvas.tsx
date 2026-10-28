@@ -31,6 +31,7 @@ export default function TableCanvas({ scene, actor, selectedId, tool, snap, pend
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 0.5 });
   const [map, setMap] = useState<HTMLImageElement | null>(null);
   const [space, setSpace] = useState(false), [pointer, setPointer] = useState<Point | null>(null);
+  const [middlePan, setMiddlePan] = useState(false);
   const previousViewport = useRef<{ width: number; height: number } | null>(null), touchRef = useRef<{ distance: number; point: Point } | null>(null);
   const tokenNodes = useRef(new Map<string, Konva.Group>()), dragging = useRef(new Set<string>());
   useEffect(() => {
@@ -61,10 +62,19 @@ export default function TableCanvas({ scene, actor, selectedId, tool, snap, pend
       if (event.target instanceof HTMLElement && /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
       if (event.code === 'Space') { event.preventDefault(); setSpace(true); }
     };
-    const up = () => setSpace(false);
+    const up = (event: KeyboardEvent | FocusEvent) => { if (event.type === 'blur' || (event as KeyboardEvent).code === 'Space') setSpace(false); };
     window.addEventListener('keydown', down); window.addEventListener('keyup', up); window.addEventListener('blur', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('blur', up); };
   }, []);
+  useEffect(() => {
+    const finish = (event: MouseEvent | FocusEvent) => {
+      if (event.type !== 'blur' && (event as MouseEvent).button !== 1) return;
+      if (middlePan) stageRef.current?.stopDrag();
+      setMiddlePan(false);
+    };
+    window.addEventListener('mouseup', finish); window.addEventListener('blur', finish);
+    return () => { window.removeEventListener('mouseup', finish); window.removeEventListener('blur', finish); };
+  }, [middlePan]);
   const fit = useCallback(() => setCamera(fitCamera(scene, viewport)), [scene, viewport]);
   const zoom = (factor: number) => setCamera(current => zoomAt(current, { x: viewport.width / 2, y: viewport.height / 2 }, factor));
   const grid: React.ReactNode[] = [];
@@ -72,7 +82,7 @@ export default function TableCanvas({ scene, actor, selectedId, tool, snap, pend
     for (let x = 0; x <= scene.width; x += scene.gridSize) grid.push(<Line key={'x' + x} points={[x, 0, x, scene.height]} stroke="#decea1" opacity={0.18} strokeWidth={1 / camera.scale} listening={false}/>);
     for (let y = 0; y <= scene.height; y += scene.gridSize) grid.push(<Line key={'y' + y} points={[0, y, scene.width, y]} stroke="#decea1" opacity={0.18} strokeWidth={1 / camera.scale} listening={false}/>);
   }
-  const panning = tool === 'pan' || space;
+  const panning = tool === 'pan' || space || middlePan;
   useEffect(() => {
     let frame = 0, firstFrame = true; const animated = new Set<string>();
     function animate() {
@@ -95,7 +105,17 @@ export default function TableCanvas({ scene, actor, selectedId, tool, snap, pend
     }
     frame = requestAnimationFrame(animate); return () => cancelAnimationFrame(frame);
   }, [scene, actor, panning, pending, motionStore]);
-  return <div className="table-stage-wrap" ref={wrapRef} style={{ cursor: panning ? 'grab' : 'default', touchAction: 'none' }}>
+  return <div className="table-stage-wrap" ref={wrapRef} style={{ cursor: panning ? 'grab' : 'default', touchAction: 'none' }}
+    onMouseDownCapture={event => {
+      if (event.button !== 1) return;
+      const stage = stageRef.current; if (!stage) return;
+      event.preventDefault(); event.stopPropagation();
+      // Capture before Konva handles a token: middle mouse always belongs to the camera.
+      for (const id of dragging.current) tokenNodes.current.get(id)?.stopDrag(event.nativeEvent);
+      stage.setPointersPositions(event.nativeEvent); setMiddlePan(true);
+      stage.startDrag({ evt: event.nativeEvent });
+    }}
+    onAuxClick={event => { if (event.button === 1) event.preventDefault(); }}>
     <Stage ref={stageRef} width={viewport.width} height={viewport.height} x={camera.x} y={camera.y} scaleX={camera.scale} scaleY={camera.scale} draggable={panning}
       onDragEnd={event => { if (event.target === stageRef.current) setCamera(current => ({ ...current, x: event.target.x(), y: event.target.y() })); }}
       onWheel={event => { event.evt.preventDefault(); const point = stageRef.current?.getPointerPosition(); if (point) setCamera(current => zoomAt(current, point, event.evt.deltaY < 0 ? 1.12 : 1 / 1.12)); }}
@@ -121,7 +141,7 @@ export default function TableCanvas({ scene, actor, selectedId, tool, snap, pend
           onClick={event => { event.cancelBubble = true; onSelect(token.id); }} onTap={() => onSelect(token.id)}
           onDragStart={event => { event.cancelBubble = true; onSelect(token.id); if (onMotionStart(token)) dragging.current.add(token.id); else { event.target.stopDrag(); event.target.position({ x: token.x, y: token.y }); } }}
           onDragMove={event => { event.cancelBubble = true; if (!dragging.current.has(token.id)) return; const point = boundedPoint(token, scene.gridSize, { x: event.target.x(), y: event.target.y() }); event.target.position(point); onMotionPreview(token, point); }}
-          onDragEnd={event => { event.cancelBubble = true; if (!dragging.current.delete(token.id)) return; const point = snapCenter({ x: event.target.x(), y: event.target.y() }, scene.gridSize, snap && !event.evt.altKey); onMotionPreview(token, point, 85); onMotionEnd(token.id); }}>
+          onDragEnd={event => { event.cancelBubble = true; if (!dragging.current.delete(token.id)) return; const point = snapCenter({ x: event.target.x(), y: event.target.y() }, scene.gridSize, snap && !event.evt?.ctrlKey && !event.evt?.altKey); onMotionPreview(token, point, 85); onMotionEnd(token.id); }}>
           <Circle name="motion-indicator" visible={false} radius={radius + 6} stroke="#87b2c2" strokeWidth={3 / camera.scale} listening={false}/>
           <Text name="motion-label" visible={false} text="" x={-80} y={-radius - 27} width={160} align="center" fontSize={13} fill="#b7deeb" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>
           {selected && <Circle radius={radius + 7} stroke="#efd18b" strokeWidth={2.5 / camera.scale} dash={[7 / camera.scale, 4 / camera.scale]} listening={false}/>}

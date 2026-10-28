@@ -6,7 +6,7 @@ fs.mkdirSync(destination,{recursive:true});
 const stamp=new Date().toISOString().replace(/[:.]/g,'-');
 const label=(process.argv[2]||'source').replace(/[^a-z0-9-]/gi,'-');
 const archive=path.join(destination,`${stamp}-${label}.tar.gz`);
-const result=spawnSync('tar',['-czf',archive,'--exclude=node_modules','--exclude=.git','--exclude=.sites-runtime','--exclude=.wrangler','--exclude=.vinext','--exclude=.next','--exclude=dist','--exclude=outputs','--exclude=.env*','--exclude=.dev.vars*','--exclude=*.tsbuildinfo','.'],{cwd:root,stdio:'inherit'});
+const result=spawnSync('tar',['-czf',archive,'--exclude=node_modules','--exclude=.git','--exclude=.sites-runtime','--exclude=.wrangler','--exclude=.vinext','--exclude=.next','--exclude=dist','--exclude=outputs','--exclude=.env*','--exclude=.dev.vars*','--exclude=*.tsbuildinfo','--exclude=knowledge/.obsidian/workspace*.json','--exclude=knowledge/.obsidian/cache','--exclude=knowledge/.trash','.'],{cwd:root,stdio:'inherit'});
 if(result.status!==0)throw new Error('Checkpoint failed');
 fs.appendFileSync(path.join(destination,'README.md'),`\n- ${new Date().toISOString()} — ${label}: ${path.basename(archive)}\n`);
 console.log(archive);
