@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1120" role="img" aria-label="Ruined tavern courtyard battle map">
+  <defs>
+    <pattern id="stone" width="96" height="72" patternUnits="userSpaceOnUse">
+      <rect width="96" height="72" fill="#292a2a"/>
+      <path d="M0 1H96M0 36H96M0 71H96M48 1V36M18 36V71M79 36V71" stroke="#3b3935" stroke-width="3"/>
+      <path d="M5 5h34M56 41h17M26 63h20" stroke="#51463c" stroke-width="2" opacity=".45"/>
+    </pattern>
+    <pattern id="planks" width="70" height="30" patternUnits="userSpaceOnUse">
+      <rect width="70" height="30" fill="#47352b"/><path d="M0 1H70M0 29H70M32 1V29" stroke="#76553b" stroke-width="2" opacity=".7"/>
+    </pattern>
+    <pattern id="tile" width="54" height="54" patternUnits="userSpaceOnUse">
+      <rect width="54" height="54" fill="#34302d"/><path d="M27 0V54M0 27H54" stroke="#45403a" stroke-width="2"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#0c0b09" flood-opacity=".65"/></filter>
+  </defs>
+  <!-- Foundation and open-air courtyard -->
+  <rect x="80" y="80" width="1440" height="960" rx="12" fill="#151514" stroke="#77634c" stroke-width="18"/>
+  <rect x="100" y="100" width="1400" height="920" fill="url(#stone)"/>
+  <rect x="480" y="370" width="650" height="410" fill="#33332d" stroke="#716047" stroke-width="10"/>
+  <path d="M500 390H1110V760H500Z" fill="#444037" opacity=".34"/>
+  <path d="M520 740Q610 700 685 740T850 738T1090 742" fill="none" stroke="#807052" stroke-width="5" opacity=".6"/>
+  <circle cx="800" cy="570" r="100" fill="#292925" stroke="#726048" stroke-width="12"/>
+  <circle cx="800" cy="570" r="69" fill="#514333" stroke="#a77948" stroke-width="8"/>
+  <path d="M754 575q46-70 92 0q-46 59-92 0Z" fill="#d08443" opacity=".85"/>
+  <path d="M800 518v102M748 570h104" stroke="#e3a35b" stroke-width="4" opacity=".75"/>
+  <!-- North-west great hall -->
+  <path d="M100 100H700V350H100Z" fill="#3b332c" stroke="#171615" stroke-width="26"/>
+  <path d="M125 125H675V325H125Z" fill="url(#planks)" opacity=".9"/>
+  <path d="M100 100H700V126H100ZM100 324H320M440 324H700M688 100V350" fill="none" stroke="#8b7050" stroke-width="24"/>
+  <path d="M100 100h190v25H100m270-25h165v25H370" fill="#a27a4c" opacity=".65"/>
+  <!-- North-east private room -->
+  <rect x="900" y="100" width="600" height="250" fill="#342f34" stroke="#171615" stroke-width="26"/>
+  <rect x="925" y="125" width="550" height="200" fill="url(#tile)"/>
+  <path d="M900 100H1500M900 100V210M900 285V350M900 338H1085M1205 338H1500M1488 100V350" fill="none" stroke="#8c7051" stroke-width="24"/>
+  <!-- South-west kitchen -->
+  <rect x="100" y="650" width="300" height="370" fill="#3a302b" stroke="#171615" stroke-width="26"/>
+  <rect x="125" y="675" width="250" height="320" fill="#494038"/>
+  <path d="M100 650H400M100 650V810M100 890V1020M100 1008H245M325 1008H400M388 650V1020" fill="none" stroke="#8b7050" stroke-width="24"/>
+  <rect x="165" y="710" width="160" height="50" rx="4" fill="url(#planks)" stroke="#b27f4e" stroke-width="6"/>
+  <circle cx="220" cy="847" r="48" fill="#292725" stroke="#a57145" stroke-width="10"/><circle cx="220" cy="847" r="24" fill="#59412e"/>
+  <!-- South-east store room -->
+  <rect x="1190" y="650" width="310" height="370" fill="#303437" stroke="#171615" stroke-width="26"/>
+  <rect x="1215" y="675" width="260" height="320" fill="#3b4140"/>
+  <path d="M1190 650H1500M1190 650V810M1190 890V1020M1190 1008H1345M1425 1008H1500M1488 650V1020" fill="none" stroke="#8b7050" stroke-width="24"/>
+  <!-- Broken interior partitions framing the courtyard -->
+  <path d="M700 100V255M700 325V370M700 780V850M700 930V1020" stroke="#82694d" stroke-width="24"/>
+  <path d="M900 100V185M900 270V350M900 780V845M900 925V1020" stroke="#82694d" stroke-width="24"/>
+  <path d="M400 650H470M555 650H640M1130 650H1190" stroke="#82694d" stroke-width="24"/>
+  <!-- Bar counter and broken tables -->
+  <g filter="url(#shadow)">
+    <rect x="235" y="180" width="365" height="68" rx="8" fill="#5b402e" stroke="#b37b47" stroke-width="9"/>
+    <path d="M260 216H575" stroke="#d29a5f" stroke-width="5" opacity=".7"/>
+    <rect x="290" y="270" width="102" height="42" rx="12" fill="#76543b" stroke="#a8794c" stroke-width="6"/>
+    <rect x="455" y="270" width="102" height="42" rx="12" fill="#76543b" stroke="#a8794c" stroke-width="6"/>
+    <ellipse cx="615" cy="510" rx="67" ry="42" fill="#62452f" stroke="#af7c4c" stroke-width="8" transform="rotate(-8 615 510)"/>
+    <ellipse cx="1010" cy="480" rx="54" ry="36" fill="#674a32" stroke="#b17d4b" stroke-width="8" transform="rotate(11 1010 480)"/>
+    <rect x="650" y="860" width="140" height="76" rx="5" fill="#59412f" stroke="#a87746" stroke-width="8" transform="rotate(4 720 898)"/>
+    <rect x="920" y="875" width="118" height="66" rx="5" fill="#59412f" stroke="#a87746" stroke-width="8" transform="rotate(-5 979 908)"/>
+  </g>
+  <!-- Barrels, crates, and rubble -->
+  <g stroke="#a8794c" stroke-width="6">
+    <g fill="#59402d"><ellipse cx="160" cy="420" rx="34" ry="22"/><path d="M126 420v74q34 24 68 0v-74M130 447h60M132 480h56" fill="none"/></g>
+    <g fill="#59402d"><ellipse cx="1460" cy="440" rx="31" ry="20"/><path d="M1429 440v68q31 22 62 0v-68M1432 466h56M1434 493h52" fill="none"/></g>
+    <g fill="#5c4531"><path d="M445 450h75v64h-75zM454 459l57 47M511 459l-57 47"/></g>
+    <g fill="#5c4531"><path d="M1290 535h78v66h-78zM1298 543l62 50M1360 543l-62 50"/></g>
+    <g fill="#544332"><path d="M110 560l30-28 36 12 16 40-28 28-45-9zM360 520l22-30 35 9 13 37-29 23-35-10zM1135 435l30-24 38 18 5 34-27 24-43-14z"/></g>
+  </g>
+  <!-- Wall damage and exposed rubble -->
+  <path d="M735 100l22 12-15 18 24 10-20 19 22 15-21 17 14 20-24 18 15 18-27 12" fill="none" stroke="#d0a16a" stroke-width="7" opacity=".7"/>
+  <path d="M100 595l24-13 18 15 22-12 18 15 22-10" fill="none" stroke="#a9794d" stroke-width="7" opacity=".65"/>
+  <path d="M1470 360l-18 25 16 17-19 23 20 21-14 24 18 19" fill="none" stroke="#a9794d" stroke-width="7" opacity=".65"/>
+  <!-- Faint scattered stone debris -->
+  <g fill="#8a755c" opacity=".55"><path d="M455 570l20-14 18 18-23 12zM1160 580l18-17 22 8-11 20zM540 845l17-13 15 19-22 8zM1080 700l18-16 19 13-18 14zM430 720l15-11 17 14-19 12zM1160 930l19-16 15 18-22 11z"/></g>
+</svg>

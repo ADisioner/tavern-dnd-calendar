@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `test_table_motions_motion_id_unique` ON `test_table_motions` (`motion_id`);

@@ -61,6 +61,11 @@ export default defineConfig(async ({ command }) => {
         inspectorPort: false,
         config: {
           ...localBindingConfig,
+          // Loopback prototype transport. No hosted secrets or bindings are changed.
+          vars: command === "serve" && process.env.TABLE_LOCAL_SECRET ? {
+            TABLE_LOCAL_SECRET: process.env.TABLE_LOCAL_SECRET,
+            TABLE_LOCAL_WS_URL: process.env.TABLE_LOCAL_WS_URL ?? "",
+          } : {},
           ...(command === "serve"
             ? {
                 services: [

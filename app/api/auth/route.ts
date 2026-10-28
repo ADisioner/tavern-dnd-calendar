@@ -3,7 +3,7 @@ import {cookies} from 'next/headers';
 import {eq,sql} from 'drizzle-orm';
 import {z} from 'zod';
 import {getDb} from '@/db';
-import {users,logins,authLimits} from '@/db/schema';
+import {users,logins,authLimits,campaigns,members} from '@/db/schema';
 import {COOKIE,currentUser,digest,passwordHash,randomToken,equalHashes} from '@/lib/auth';
 const reply=(data:unknown,status=200)=>NextResponse.json(data,{status,headers:{'Cache-Control':'no-store'}});
 export async function GET(){
@@ -33,26 +33,35 @@ export async function POST(request:NextRequest){
     if(!['register','login'].includes(data.action))return reply({error:'Неизвестное действие.'},400);
     const input=z.object({login:z.string().trim().min(3).max(32).regex(/^[\p{L}\p{N}_-]+$/u),password:z.string().min(4).max(128)}).parse(data);
     const registrationName=data.action==='register'?z.string().trim().max(50).nullish().parse(data.name):undefined;
+    const invitation=z.object({campaignId:z.string().uuid().optional(),timezone:z.string().max(80).default('UTC').refine(value=>{try{new Intl.DateTimeFormat('en',{timeZone:value});return true;}catch{return false;}})}).parse(data);
     const login=input.login.toLocaleLowerCase('ru-RU');
     const now=Date.now(),key=await digest((request.headers.get('cf-connecting-ip')??'local')+':auth');
     const limit=await db.insert(authLimits).values({key,count:1,expires:now+900000}).onConflictDoUpdate({target:authLimits.key,set:{count:sql`CASE WHEN expires<${now} THEN 1 ELSE count+1 END`,expires:sql`CASE WHEN expires<${now} THEN ${now+900000} ELSE expires END`}}).returning().get();
     if(limit.count>30)return reply({error:'Слишком много попыток. Попробуйте через 15 минут.'},429);
+    if(invitation.campaignId&&!await db.select({id:campaigns.id}).from(campaigns).where(eq(campaigns.id,invitation.campaignId)).get())return reply({error:'Приглашение недействительно: кампания больше не существует.'},404);
+    const token=randomToken(),expires=now+30*86400000,tokenHash=await digest(token);
     let record=await db.select().from(users).where(eq(users.login,login)).get();
     if(data.action==='register'){
       if(record)return reply({error:'Этот логин уже занят.'},409);
       const salt=randomToken(),hash=await passwordHash(input.password,salt),id=crypto.randomUUID();
-      // A single database statement assigns the initial admin without a signup race.
-      await db.run(sql`INSERT INTO users (id,login,name,password_hash,salt,role,disabled,created_at) SELECT ${id},${login},${registrationName||input.login},${hash},${salt},CASE WHEN (SELECT COUNT(*) FROM users)=0 THEN 'admin' ELSE 'player' END,0,${now}`);
+      // D1 batch is transactional: registration, invitation and session succeed together.
+      // The role expression still assigns the initial administrator atomically.
+      const createUser=db.insert(users).values({id,login,name:registrationName||input.login,passwordHash:hash,salt,
+        role:sql`CASE WHEN (SELECT COUNT(*) FROM users)=0 THEN 'admin' ELSE 'player' END`,disabled:0,createdAt:now});
+      const createSession=db.insert(logins).values({tokenHash,userId:id,expires});
+      if(invitation.campaignId)await db.batch([createUser,db.insert(members).values({campaignId:invitation.campaignId,userId:id,name:registrationName||input.login,timezone:invitation.timezone,role:'player'}),createSession]);
+      else await db.batch([createUser,createSession]);
       record=await db.select().from(users).where(eq(users.id,id)).get();
     }else{
       const hash=await passwordHash(input.password,record?.salt??'no-such-user-salt');
       if(!record||record.disabled||!equalHashes(hash,record.passwordHash))return reply({error:'Неверный логин или пароль.'},401);
+      const createSession=db.insert(logins).values({tokenHash,userId:record.id,expires});
+      if(invitation.campaignId)await db.batch([db.insert(members).values({campaignId:invitation.campaignId,userId:record.id,name:record.name,timezone:invitation.timezone,role:'player'}).onConflictDoNothing(),createSession]);
+      else await createSession;
     }
     if(!record)return reply({error:'Не удалось создать аккаунт.'},500);
-    const token=randomToken(),expires=now+30*86400000;
-    await db.insert(logins).values({tokenHash:await digest(token),userId:record.id,expires});
     (await cookies()).set(COOKIE,token,{httpOnly:true,secure:request.nextUrl.protocol==='https:',sameSite:'lax',path:'/',expires:new Date(expires)});
-    return reply({user:{id:record.id,name:record.name,login:record.login,role:record.role}});
+    return reply({user:{id:record.id,name:record.name,login:record.login,role:record.role},...(invitation.campaignId?{campaignId:invitation.campaignId}:{})});
   }catch(e){if(e instanceof z.ZodError)return reply({error:'Логин: 3–32 буквы, цифры, _ или -. Пароль: 4–128 символов.'},400);console.error('Auth write',e);return reply({error:'Не удалось выполнить действие. Попробуйте ещё раз.'},500);}
 }
 

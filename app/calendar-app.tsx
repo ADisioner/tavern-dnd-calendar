@@ -1,6 +1,8 @@
 'use client';
+import { useRouter } from 'next/navigation';
 import {useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
-import {CalendarDays,Users,BookOpen,Settings,Plus,ChevronLeft,ChevronRight,Globe2,Clock,ArrowUpRight,Check, X,Copy,Shield,Sparkles,LogOut,Trash2,Menu,RefreshCw,CheckCircle2,KeyRound,Map,ScrollText,ArrowRight,Eye,EyeOff,Sun,Moon} from 'lucide-react';
+import './auth-gate.css';
+import {CalendarDays,Users,BookOpen,Settings,Plus,ChevronLeft,ChevronRight,Globe2,Clock,ArrowUpRight,Check, X,Copy,Shield,Sparkles,LogOut,Trash2,Menu,RefreshCw,CheckCircle2,KeyRound,Map,ScrollText,ArrowRight,Eye,EyeOff,Sun,Moon,MapPinned} from 'lucide-react';
 import {dateKey,timeText,zonedToUtc,findCommonWindows,intervalTouchesDay,resolveLocalStart,moscowOffsetMinutes,moscowOffsetLabel,timezoneLabel,type Interval} from '@/lib/scheduler';
 type User={id:string;name:string;login:string;role:string};
 type Campaign={id:string;name:string;ownerId:string;createdAt:number};
@@ -23,7 +25,8 @@ function demoData(now:number,zone:string):Data{
   return {user:null,campaigns:[{id:campaignId,name:'За туманами Равенлофта',ownerId:'dm',createdAt:now}],selected:campaignId,members,availability,sessions:[{id:'demo-session',campaignId,title:'Тайна старого аббатства',notes:'Возьмите листы персонажей и приготовьте кубики. Продолжаем исследование аббатства.',start:day(3,'19:00'),end:day(3,'22:00')}]};
 }
 export default function CalendarApp(){
-  const [data,setData]=useState<Data>(EMPTY),[ready,setReady]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),[toast,setToast]=useState('');
+  const router=useRouter();
+  const [data,setData]=useState<Data>(EMPTY),[ready,setReady]=useState(false),[authChecked,setAuthChecked]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),[toast,setToast]=useState('');
   const [zone,setZone]=useState('UTC'),[now,setNow]=useState(0),[month,setMonth]=useState([2026,9]),[selectedDay,setSelectedDay]=useState(''),[duration,setDuration]=useState(3);
   const [view,setView]=useState('calendar'),[mobile,setMobile]=useState(false),[modal,setModal]=useState(''),[authMode,setAuthMode]=useState('login'),[setup,setSetup]=useState(false),[showPassword,setShowPassword]=useState(false);
   const [name,setName]=useState(''),[title,setTitle]=useState(''),[startInput,setStartInput]=useState(''),[endInput,setEndInput]=useState(''),[notes,setNotes]=useState(''),[confirmItem,setConfirmItem]=useState<{action:string;id:string;label:string}|null>(null);
@@ -47,7 +50,7 @@ export default function CalendarApp(){
       try{new Intl.DateTimeFormat('ru',{timeZone:saved});}catch{saved=detected;}
       setZone(saved);const t=Date.now();setNow(t);const key=dateKey(t,saved);setSelectedDay(key);setMonth([Number(key.slice(0,4)),Number(key.slice(5,7))-1]);
       campaignRef.current=new URLSearchParams(location.search).get('campaign')||'';
-      void load();void fetch('/api/auth').then(async r=>await r.json() as {setup?:boolean;user?:User|null}).then(v=>{setSetup(!!v.setup);if(v.setup)setAuthMode('register');}).catch(()=>{});
+      void load();void fetch('/api/auth').then(async r=>await r.json() as {setup?:boolean;user?:User|null}).then(v=>{setSetup(!!v.setup);if(v.setup)setAuthMode('register');}).catch(()=>{}).finally(()=>setAuthChecked(true));
     });
     const timer=setInterval(()=>{setNow(Date.now());if(document.visibilityState==='visible')void load();},20000);return()=>{cancelAnimationFrame(frame);clearInterval(timer);};
   },[load]);
@@ -82,8 +85,8 @@ export default function CalendarApp(){
   function today(){const key=dateKey(Date.now(),zone);setMonth([Number(key.slice(0,4)),Number(key.slice(5,7))-1]);setSelectedDay(key);}
   async function onSubmit(e:FormEvent<HTMLFormElement>){
     e.preventDefault();const form=new FormData(e.currentTarget);
-    if(modal==='auth'){
-      setBusy(true);setError('');try{const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:authMode,login:form.get('login'),password:form.get('password'),...(authMode==='register'?{name:form.get('name')||undefined}:{})})}),v=await r.json() as {error?:string};if(!r.ok)throw new Error(v.error);setSetup(false);await load();close();notify(authMode==='register'?'Добро пожаловать в Таверну!':'Вы вошли в аккаунт.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}return;
+    if(modal==='auth'||!data.user){
+      setBusy(true);setError('');try{const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:authMode,login:form.get('login'),password:form.get('password'),...(authMode==='register'?{name:form.get('name')||undefined}:{}),...(campaignRef.current?{campaignId:campaignRef.current,timezone:zone}:{})})}),v=await r.json() as {error?:string;campaignId?:string};if(!r.ok)throw new Error(v.error);setSetup(false);await load(v.campaignId);close();notify(v.campaignId?'Вы присоединились к кампании.':authMode==='register'?'Добро пожаловать в Таверну!':'Вы вошли в аккаунт.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}return;
     }
     if(modal==='create'||modal==='join'){if(await mutate(modal==='create'?'create':'join',{name,timezone:zone,title})){close();notify(modal==='create'?'Кампания создана. Пригласите свою группу!':'Вы присоединились к группе.');}return;}
     if(modal==='availability'){
@@ -107,11 +110,30 @@ export default function CalendarApp(){
   }else if(await mutate(confirmItem.action,confirmItem.action==='removeMember'?{userId:confirmItem.id}:{id:confirmItem.id})){close();notify('Изменения сохранены.');}}
   function confirm(action:string,id:string,label:string){setConfirmItem({action,id,label});setError('');setModal('confirm');}
   const nav=[['calendar','Календарь',CalendarDays],['group','Моя группа',Users],['journal','Журнал сессий',BookOpen]] as const;
+  if(!ready||!authChecked)return <div className="auth-gate-loading" aria-live="polite"><span className="auth-gate-mark"><Dice/></span><span>Таверна</span><small>Проверяем доступ к вашему столу…</small></div>;
+  if(!data.user)return <div className="auth-gate" data-theme={theme}>
+    <button className="auth-gate-theme" onClick={toggleTheme} aria-label={theme==='dark'?'Включить светлую тему':'Включить тёмную тему'}>{theme==='dark'?<Sun size={18}/>:<Moon size={18}/>}</button>
+    <div className="auth-gate-card"><div className="auth-gate-brand"><span className="auth-gate-mark"><Dice/></span><span>Таверна<small>ВРЕМЯ ДЛЯ ПРИКЛЮЧЕНИЙ</small></span></div>
+      <span className="auth-gate-kicker"><Sparkles size={14}/> ВАША ПАРТИЯ ЖДЁТ</span>
+      <h1>{authMode==='register'?'Займите место за столом':'С возвращением, искатель'}</h1>
+      <p className="auth-gate-intro">{setup?'Создайте первый аккаунт администратора.':'Войдите, чтобы увидеть календарь и планы вашей группы.'} Логин и пароль — никакой почты.</p>
+      {campaignRef.current&&<div className="auth-gate-invite"><Users size={16}/> Вас пригласили в кампанию. Приглашение откроется после входа.</div>}
+      <div className="auth-gate-tabs"><button type="button" className={authMode==='login'?'active':''} onClick={()=>{setAuthMode('login');setError('');}}>Войти</button><button type="button" className={authMode==='register'?'active':''} onClick={()=>{setAuthMode('register');setError('');}}>Регистрация</button></div>
+      {error&&<div className="auth-gate-error" role="alert">{error}</div>}
+      <form onSubmit={onSubmit} className="auth-gate-form">
+        {authMode==='register'&&<label>Имя за игровым столом<input name="name" placeholder="Например, Элира" maxLength={50} autoComplete="nickname" required/></label>}
+        <label>Логин<input name="login" placeholder="Например, dungeon_master" minLength={3} maxLength={32} autoComplete="username" required autoCapitalize="none" spellCheck={false}/></label>
+        <label>Пароль<div className="auth-gate-password"><input name="password" type={showPassword?'text':'password'} minLength={4} maxLength={128} required autoComplete={authMode==='register'?'new-password':'current-password'} placeholder="Не менее 4 символов"/><button type="button" aria-label={showPassword?'Скрыть пароль':'Показать пароль'} onClick={()=>setShowPassword(!showPassword)}>{showPassword?<EyeOff size={17}/>:<Eye size={17}/>}</button></div></label>
+        <button className="auth-gate-submit" type="submit" disabled={busy}>{busy?'Подключаем…':authMode==='register'?'Создать аккаунт':'Войти'}<ArrowRight size={17}/></button>
+      </form><div className="auth-gate-foot"><Shield size={14}/> Ваши хроники доступны только участникам кампании.</div>
+    </div><p className="auth-gate-caption">Хорошие истории начинаются, когда все в сборе.</p>
+  </div>;
   return <div className="app-shell">
     <aside id="party-navigation" className={`sidebar ${mobile?'mobile-open':''}`}>
       <button className="brand" aria-label="Таверна — на главную" onClick={()=>{setView('calendar');setMobile(false);today();}}><span className="brand-mark"><Dice/></span><span>Таверна<small>ВРЕМЯ ДЛЯ ПРИКЛЮЧЕНИЙ</small></span></button>
       <div className="workspace-label">ХРОНИКИ ВАШЕЙ ПАРТИИ</div>
       <nav>{nav.map(([key,label,Icon])=><button key={key} className={`nav-item ${view===key?'active':''}`} onClick={()=>{setView(key);setMobile(false);}}><Icon size={19}/>{label}{key==='group'&&<span className="nav-count">{shown.members.length}</span>}</button>)}</nav>
+      <button className="nav-item" onClick={()=>{if(!data.user){requireGroup('auth');return;}if(!data.selected||data.joinRequired){requireGroup('create');return;}router.push('/test?campaign='+encodeURIComponent(data.selected));}}><MapPinned size={19}/>Тест</button>
       <div className="sidebar-section"><span>МОИ КАМПАНИИ</span><button className="icon-button" aria-label="Создать кампанию" onClick={()=>requireGroup('create')}><Plus size={16}/></button></div>
       {shown.campaigns.map((c,i)=><button key={c.id} className={`campaign-nav ${shown.selected===c.id?'selected':''}`} onClick={()=>{if(c.id!=='demo')switchCampaign(c.id);}}><span className={`campaign-dot ${colors[i%colors.length]}`}/><span>{c.name}</span></button>)}
       <button className="new-campaign" onClick={()=>requireGroup('create')}><Plus size={16}/> Новая кампания</button>

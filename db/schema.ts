@@ -25,3 +25,21 @@ export const sessions = sqliteTable('sessions', {
   id: text('id').primaryKey(), campaignId: text('campaign_id').notNull().references(() => campaigns.id),
   title: text('title').notNull(), start: integer('start').notNull(), end: integer('end').notNull(), notes: text('notes').notNull(),
 });
+// Experimental VTT data is isolated from calendar records and existing accounts.
+export const testTableRooms = sqliteTable('test_table_rooms', {
+  campaignId: text('campaign_id').primaryKey(), payload: text('payload').notNull(), version: integer('version').notNull(),
+});
+export const testTableMotions = sqliteTable('test_table_motions', {
+  campaignId: text('campaign_id').notNull(), sceneId: text('scene_id').notNull(), tokenId: text('token_id').notNull(),
+  motionId: text('motion_id').notNull().unique(), clientId: text('client_id').notNull(), userId: text('user_id').notNull(),
+  name: text('name').notNull(), expectedVersion: integer('expected_version').notNull(), seq: integer('seq').notNull(),
+  x: integer('x').notNull(), y: integer('y').notNull(), expires: integer('expires').notNull(), status: text('status').notNull(),
+  result: text('result'),
+}, t => [primaryKey({ columns: [t.campaignId, t.sceneId, t.tokenId] })]);
+export const testTablePeers = sqliteTable('test_table_peers', {
+  clientId: text('client_id').primaryKey(), campaignId: text('campaign_id').notNull(), userId: text('user_id').notNull(), expires: integer('expires').notNull(),
+});
+export const testTableAssets = sqliteTable('test_table_assets', {
+  id: text('id').primaryKey(), ownerId: text('owner_id').notNull(), campaignId: text('campaign_id'),
+  metadata: text('metadata').notNull(), size: integer('size').notNull(), archived: integer('archived').notNull(), updatedAt: integer('updated_at').notNull(),
+});
