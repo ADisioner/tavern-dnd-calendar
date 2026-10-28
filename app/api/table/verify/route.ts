@@ -1,3 +1,4 @@
+import { tableRole } from '@/lib/campaign-roles';
 import { NextRequest, NextResponse } from 'next/server';
 import { env } from 'cloudflare:workers';
 import { and, eq, gt } from 'drizzle-orm';
@@ -26,6 +27,6 @@ export async function POST(request: NextRequest) {
     const roster = await db.select({ userId: members.userId, name: members.name, role: members.role }).from(members).where(eq(members.campaignId, claims.campaignId));
     const member = roster.find(m => m.userId === claims.userId);
     if (!campaign || !member) return reply({ error: 'Membership ended' }, 403);
-    return reply({ actor: { userId: claims.userId, name: member.name, role: campaign.ownerId === claims.userId ? 'master' : 'player' }, roster, campaignId: campaign.id });
+    return reply({ actor: { userId: claims.userId, name: member.name, role: tableRole(member) }, roster: roster.map(value => ({ ...value, role: tableRole(value) })), campaignId: campaign.id });
   } catch { return reply({ error: 'Permission check failed' }, 503); }
 }

@@ -1,3 +1,4 @@
+import { tableRole } from '@/lib/campaign-roles';
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { env } from 'cloudflare:workers';
@@ -23,17 +24,18 @@ export async function GET(request: NextRequest) {
     const campaign = await db.select().from(campaigns).where(eq(campaigns.id, campaignId.data)).get();
     if (!campaign) return reply({ error: 'Кампания не найдена.' }, 404);
     const roster = await db.select({ userId: members.userId, name: members.name, role: members.role }).from(members).where(eq(members.campaignId, campaignId.data));
+    const tableRoster = roster.map(member => ({ ...member, role: tableRole(member) }));
     if (!local) {
       const socket = new URL('/api/test/table/socket', request.nextUrl.origin); socket.protocol = request.nextUrl.protocol === 'https:' ? 'wss:' : 'ws:';
       socket.searchParams.set('campaign', campaign.id); socket.searchParams.set('client', crypto.randomUUID());
-      return reply({ user, campaign: { id: campaign.id, name: campaign.name }, roster, actor: { userId: user.id, name: membership.name, role: campaign.ownerId === user.id ? 'master' : 'player' },
+      return reply({ user, campaign: { id: campaign.id, name: campaign.name }, roster: tableRoster, actor: { userId: user.id, name: membership.name, role: tableRole(membership) },
         transport: 'hosted', ticket: '', socketUrl: socket.href });
     }
     const token = (await cookies()).get(COOKIE)!.value;
     const ticket = await issueTableTicket({ userId: user.id, campaignId: campaign.id, sessionHash: await digest(token),
       origin: request.nextUrl.origin, expires: Date.now() + 90000, nonce: crypto.randomUUID() }, env.TABLE_LOCAL_SECRET!);
-    return reply({ user, campaign: { id: campaign.id, name: campaign.name }, roster,
-      actor: { userId: user.id, name: membership.name, role: campaign.ownerId === user.id ? 'master' : 'player' },
+    return reply({ user, campaign: { id: campaign.id, name: campaign.name }, roster: tableRoster,
+      actor: { userId: user.id, name: membership.name, role: tableRole(membership) },
       ticket, socketUrl: env.TABLE_LOCAL_WS_URL });
   } catch (error) { console.error('Table bootstrap failed', error); return reply({ error: 'Не удалось открыть игровой стол.' }, 500); }
 }

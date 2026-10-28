@@ -1,3 +1,4 @@
+import { tableRole } from '../campaign-roles.ts';
 import { z } from 'zod';
 import { roomDataSchema, createRoom, type TableRoomData } from './room.ts';
 import { CommandError, type TableActor, type TableMember } from './scene.ts';
@@ -14,14 +15,14 @@ export async function authorizeHosted(env: HostedEnv, request: Request, campaign
   const key = hash + ':' + campaignId, cached = authorizationCache.get(key);
   if (!fresh && cached && Date.now() - cached.at < 1000) return cached.value;
   const db = requireDb(env);
-  const row = await db.prepare(`SELECT u.id,u.name,u.login,u.role,c.name AS campaign_name,c.owner_id,m.name AS member_name FROM logins l JOIN users u ON u.id=l.user_id JOIN members m ON m.user_id=u.id JOIN campaigns c ON c.id=m.campaign_id WHERE l.token_hash=? AND l.expires>? AND u.disabled=0 AND c.id=?`).bind(hash, Date.now(), campaignId).first<{ id: string; name: string; login: string; role: string; campaign_name: string; owner_id: string; member_name: string }>();
+  const row = await db.prepare(`SELECT u.id,u.name,u.login,u.role,c.name AS campaign_name,m.role AS member_role,m.name AS member_name FROM logins l JOIN users u ON u.id=l.user_id JOIN members m ON m.user_id=u.id JOIN campaigns c ON c.id=m.campaign_id WHERE l.token_hash=? AND l.expires>? AND u.disabled=0 AND c.id=?`).bind(hash, Date.now(), campaignId).first<{ id: string; name: string; login: string; role: string; campaign_name: string; member_role: string; member_name: string }>();
   if (!row) {
     authorizationCache.delete(key);
     const valid = await db.prepare('SELECT u.id FROM logins l JOIN users u ON u.id=l.user_id WHERE l.token_hash=? AND l.expires>? AND u.disabled=0').bind(hash, Date.now()).first();
     throw new CommandError(valid ? 'forbidden' : 'auth', 'Нет доступа к этой кампании. Вернитесь в календарь.');
   }
   const roster = (await db.prepare('SELECT user_id AS userId,name,role FROM members WHERE campaign_id=?').bind(campaignId).all<TableMember>()).results;
-  const value: HostedActor = { actor: { userId: row.id, name: row.member_name, role: row.owner_id === row.id ? 'master' : 'player' }, roster, campaignId, sessionHash: hash,
+  const value: HostedActor = { actor: { userId: row.id, name: row.member_name, role: tableRole({ role: row.member_role }) }, roster: roster.map(member => ({ ...member, role: tableRole(member) })), campaignId, sessionHash: hash,
     user: { id: row.id, name: row.name, login: row.login, role: row.role }, campaign: { id: campaignId, name: row.campaign_name } };
   if (authorizationCache.size > 1000) authorizationCache.clear(); authorizationCache.set(key, { at: Date.now(), value }); return value;
 }

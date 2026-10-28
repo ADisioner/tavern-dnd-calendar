@@ -5,7 +5,7 @@ import { boundedPoint, motionMessageSchema } from './motion.ts';
 import { CommandError } from './scene.ts';
 import { hostedImage } from './hosted-library.ts';
 
-export type HostedClient = { id: string; campaignId: string; preview?: string; version: number; sceneId: string; generation: number; touched: number; seen: Map<string,string> };
+export type HostedClient = { id: string; campaignId: string; preview?: string; version: number; sceneId: string; generation: number; touched: number; seen: Map<string,string>; permissions?: string };
 export function hostedClient(id: string, campaignId: string, preview?: string): HostedClient {
   z.string().uuid().parse(id); z.string().uuid().parse(campaignId); if (preview) z.string().uuid().parse(preview);
   return { id, campaignId, preview, version: -1, sceneId: '', generation: 0, touched: 0, seen: new Map() };
@@ -17,7 +17,7 @@ function allowedScene(data: TableRoomData, actor: HostedActor, id: string) {
   return entry.scene;
 }
 async function presence(env: HostedEnv, actor: HostedActor) {
-  return (await requireDb(env).prepare(`SELECT DISTINCT m.user_id AS userId,m.name,CASE WHEN c.owner_id=m.user_id THEN 'master' ELSE 'player' END AS role FROM test_table_peers p JOIN members m ON m.user_id=p.user_id AND m.campaign_id=p.campaign_id JOIN campaigns c ON c.id=m.campaign_id JOIN users u ON u.id=m.user_id WHERE p.campaign_id=? AND p.expires>? AND u.disabled=0`).bind(actor.campaignId, Date.now()).all()).results;
+  return (await requireDb(env).prepare(`SELECT DISTINCT m.user_id AS userId,m.name,CASE WHEN m.role IN ('master','master,player') THEN 'master' ELSE 'player' END AS role FROM test_table_peers p JOIN members m ON m.user_id=p.user_id AND m.campaign_id=p.campaign_id JOIN campaigns c ON c.id=m.campaign_id JOIN users u ON u.id=m.user_id WHERE p.campaign_id=? AND p.expires>? AND u.disabled=0`).bind(actor.campaignId, Date.now()).all()).results;
 }
 export async function pollHosted(env: HostedEnv, actor: HostedActor, client: HostedClient, force = false, commandId?: string) {
   const db = requireDb(env), generation = client.generation, events: Record<string, unknown>[] = [];
@@ -25,7 +25,9 @@ export async function pollHosted(env: HostedEnv, actor: HostedActor, client: Hos
   if (touched) { await db.prepare('INSERT INTO test_table_peers(client_id,campaign_id,user_id,expires) VALUES(?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET expires=excluded.expires WHERE campaign_id=excluded.campaign_id AND user_id=excluded.user_id AND expires<?').bind(client.id, actor.campaignId, actor.actor.userId, Date.now() + 12000, Date.now() + 8000).run(); client.touched = Date.now(); }
   const room = await readHostedRoom(env, actor), version = room.version;
   const view = roomView(room.state.data, actor.actor, client.preview), sceneId = view.scene.id;
-  if (force || version !== client.version || client.sceneId !== sceneId) {
+  const permissions = JSON.stringify([actor.actor, actor.roster]);
+  if (force || version !== client.version || client.sceneId !== sceneId || client.permissions !== permissions) {
+    client.permissions = permissions;
     events.push({ type: 'snapshot', ...view, actor: actor.actor, roster: actor.roster, peers: await presence(env, actor), commandId: commandId ?? room.state.receipts.at(-1)?.id });
     if (client.version >= 0) events.push({ type: 'library-changed' });
   } else if (touched) events.push({ type: 'presence', peers: await presence(env, actor) });
