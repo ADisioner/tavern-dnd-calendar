@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { authorizeHosted, readHostedRoom, requireDb, saveHostedRoom, type HostedActor, type HostedEnv } from './hosted-store.ts';
 import { applyRoomCommand, roomCommandSchema, roomView, type TableRoomData } from './room.ts';
-import { boundedPoint, motionMessageSchema } from './motion.ts';
-import { CommandError } from './scene.ts';
+import { affectedMotionTokens, motionMessageSchema } from './motion.ts';
+import { CommandError, linkedTokens, boundedGroupPoint } from './scene.ts';
 import { hostedImage } from './hosted-library.ts';
 
 export type HostedClient = { id: string; campaignId: string; preview?: string; version: number; sceneId: string; generation: number; touched: number; seen: Map<string,string>; permissions?: string };
@@ -59,14 +59,17 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
       const room = await readHostedRoom(env, actor);
       if (room.state.receipts.some(value => value.id === command.id && value.userId === actor.actor.userId)) return pollHosted(env, actor, client, true, command.id);
       if ((command.type === 'add' || command.type === 'map') && command.assetId) await hostedImage(env, actor, command.assetId);
-      if (command.type === 'move' || command.type === 'update') {
-        const locked = await db.prepare("SELECT motion_id FROM test_table_motions WHERE campaign_id=? AND scene_id=? AND token_id=? AND expires>? AND status IN ('moving','committing')").bind(client.campaignId, command.sceneId, command.tokenId, Date.now()).first();
-        if (locked) throw new CommandError('busy', 'Этот токен сейчас двигает участник.');
+      const commandScene = room.state.data.scenes.find(entry => entry.scene.id === command.sceneId)?.scene;
+      const touched = commandScene ? affectedMotionTokens(commandScene, command).map(token => token.id) : [];
+      if (touched.length) {
+        const locked = await db.prepare(`SELECT motion_id FROM test_table_motions WHERE campaign_id=? AND scene_id=? AND token_id IN (SELECT value FROM json_each(?)) AND expires>? AND status IN ('moving','committing')`).bind(client.campaignId, command.sceneId, JSON.stringify(touched), Date.now()).first();
+        if (locked) throw new CommandError('busy', 'Эту группу сейчас двигает участник.');
       }
       const result = applyRoomCommand(room.state.data, command, actor.actor, actor.roster);
       if (command.type === 'scene-view') { client.preview = result.viewSceneId; return pollHosted(env, actor, client, true, command.id); }
       const state = { data: result.data, receipts: [...room.state.receipts, { id: command.id, userId: actor.actor.userId }].slice(-1000) };
-      if (await saveHostedRoom(env, client.campaignId, room.version, state)) {
+      const idleToken = touched.length ? { sceneId: command.sceneId!, tokenIds: touched } : undefined;
+      if (await saveHostedRoom(env, client.campaignId, room.version, state, undefined, idleToken)) {
         if (result.viewSceneId) client.preview = result.viewSceneId;
         if (['grid','scene-activate','scene-archive'].includes(command.type)) await db.prepare("UPDATE test_table_motions SET status='cancelled',expires=? WHERE campaign_id=? AND status IN ('moving','committing')").bind(Date.now() + 3000, client.campaignId).run();
         return pollHosted(env, actor, client, true, command.id);
@@ -77,12 +80,13 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
   const motion = motionMessageSchema.parse(raw), room = await readHostedRoom(env, actor), scene = allowedScene(room.state.data, actor, motion.sceneId);
   const token = scene.tokens.find(value => value.id === motion.tokenId); if (!token) throw new CommandError('missing', 'Токен не найден.');
   if (motion.type === 'motion-start') {
+    if (linkedTokens(scene, token)[0].id !== token.id) throw new CommandError('busy', 'Двигайте группу через её основной токен.');
     if (token.version !== motion.expectedVersion) throw new CommandError('conflict', 'Положение токена уже изменилось.');
     const prior = await db.prepare('SELECT * FROM test_table_motions WHERE campaign_id=? AND scene_id=? AND token_id=?').bind(client.campaignId, motion.sceneId, motion.tokenId).first<MotionRow>();
     if (prior?.motion_id === motion.motionId && prior.client_id === client.id && prior.expires > Date.now()) return { version: room.version, events: [] };
     if (prior && prior.expires > Date.now() && ['moving','committing'].includes(prior.status)) throw new CommandError('busy', 'Этот токен сейчас двигает другой участник.');
     await db.prepare("UPDATE test_table_motions SET status='cancelled',expires=? WHERE campaign_id=? AND client_id=? AND status='moving'").bind(Date.now() + 3000, client.campaignId, client.id).run();
-    const claimed = await db.prepare("INSERT INTO test_table_motions(campaign_id,scene_id,token_id,motion_id,client_id,user_id,name,expected_version,seq,x,y,expires,status) VALUES(?,?,?,?,?,?,?,?,-1,?,?,?,'moving') ON CONFLICT(campaign_id,scene_id,token_id) DO UPDATE SET motion_id=excluded.motion_id,client_id=excluded.client_id,user_id=excluded.user_id,name=excluded.name,expected_version=excluded.expected_version,seq=-1,x=excluded.x,y=excluded.y,expires=excluded.expires,status='moving',result=NULL WHERE test_table_motions.expires<=? OR test_table_motions.status IN ('done','cancelled')").bind(client.campaignId, motion.sceneId, motion.tokenId, motion.motionId, client.id, actor.actor.userId, actor.actor.name, motion.expectedVersion, token.x, token.y, Date.now() + 3000, Date.now()).run();
+    const claimed = await db.prepare("INSERT INTO test_table_motions(campaign_id,scene_id,token_id,motion_id,client_id,user_id,name,expected_version,seq,x,y,expires,status) SELECT ?,?,?,?,?,?,?,?,-1,?,?,?,'moving' WHERE EXISTS(SELECT 1 FROM test_table_rooms WHERE campaign_id=? AND version=?) ON CONFLICT(campaign_id,scene_id,token_id) DO UPDATE SET motion_id=excluded.motion_id,client_id=excluded.client_id,user_id=excluded.user_id,name=excluded.name,expected_version=excluded.expected_version,seq=-1,x=excluded.x,y=excluded.y,expires=excluded.expires,status='moving',result=NULL WHERE (test_table_motions.expires<=? OR test_table_motions.status IN ('done','cancelled')) AND EXISTS(SELECT 1 FROM test_table_rooms WHERE campaign_id=? AND version=?)").bind(client.campaignId, motion.sceneId, motion.tokenId, motion.motionId, client.id, actor.actor.userId, actor.actor.name, motion.expectedVersion, token.x, token.y, Date.now() + 3000, client.campaignId, room.version, Date.now(), client.campaignId, room.version).run();
     if (claimed.meta.changes !== 1) throw new CommandError('busy', 'Этот токен сейчас двигает другой участник.');
     return { version: room.version, events: [{ ...motion, type: 'motion-started', userId: actor.actor.userId, name: actor.actor.name, x: token.x, y: token.y, seq: -1 }] };
   }
@@ -98,13 +102,13 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
   }
   if (motion.type === 'motion-frame') {
     if (lease.status !== 'moving' || motion.seq <= lease.seq || token.version !== lease.expected_version) return { version: room.version, events: [] };
-    const point = boundedPoint(token, scene.gridSize, motion);
+    const point = boundedGroupPoint(scene, token, motion);
     await db.prepare("UPDATE test_table_motions SET seq=?,x=?,y=?,expires=? WHERE campaign_id=? AND motion_id=? AND client_id=? AND seq<? AND status='moving'").bind(motion.seq, point.x, point.y, Date.now() + 3000, client.campaignId, motion.motionId, client.id, motion.seq).run();
     return { version: room.version, events: [] };
   }
   if (lease.status === 'done' && lease.result) return { version: room.version, events: [JSON.parse(lease.result)] };
   if (motion.seq <= lease.seq) throw new CommandError('expired', 'Кадр движения устарел.');
-  const point = boundedPoint(token, scene.gridSize, motion); client.generation++;
+  const point = boundedGroupPoint(scene, token, motion); client.generation++;
   const secured = await db.prepare("UPDATE test_table_motions SET seq=?,x=?,y=?,expires=?,status='committing' WHERE campaign_id=? AND motion_id=? AND client_id=? AND status='moving' AND seq<?").bind(motion.seq, point.x, point.y, Date.now() + 10000, client.campaignId, motion.motionId, client.id, motion.seq).run();
   if (secured.meta.changes !== 1) throw new CommandError('expired', 'Движение уже завершено.');
   try {
@@ -115,7 +119,7 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
       const state = { data: result.data, receipts: [...current.state.receipts, { id: command.id, userId: actor.actor.userId }].slice(-1000) };
       if (await saveHostedRoom(env, client.campaignId, current.version, state, { motionId: motion.motionId, clientId: client.id })) {
         const changed = result.data.scenes.find(value => value.scene.id === source.id)!.scene;
-        const event = { type: 'motion-committed', motionId: motion.motionId, sceneId: source.id, tokenId: motion.tokenId, token: changed.tokens.find(value => value.id === token.id), sceneRevision: changed.revision, updatedAt: changed.updatedAt };
+        const event = { type: 'motion-committed', motionId: motion.motionId, sceneId: source.id, tokenId: motion.tokenId, token: changed.tokens.find(value => value.id === token.id), tokens: linkedTokens(changed, changed.tokens.find(value => value.id === token.id)!), sceneRevision: changed.revision, updatedAt: changed.updatedAt };
         await db.prepare("UPDATE test_table_motions SET status='done',result=?,expires=? WHERE campaign_id=? AND motion_id=? AND client_id=?").bind(JSON.stringify(event), Date.now() + 10000, client.campaignId, motion.motionId, client.id).run();
         return { version: current.version + 1, events: [event] };
       }

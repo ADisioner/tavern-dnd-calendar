@@ -1,8 +1,8 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { sceneSchema, tokenSchema, type TableToken, type TableScene, type TableActor, type TableMember } from '@/lib/table/scene';
+import { sceneSchema, tokenSchema, linkedTokens, type TableToken, type TableScene, type TableActor, type TableMember } from '@/lib/table/scene';
 import { sceneSummarySchema, type SceneSummary, type RoomCommand } from '@/lib/table/room';
-import { MotionStore, boundedPoint, MOTION_INTERVAL, type MotionPoint } from '@/lib/table/motion';
+import { MotionStore, MOTION_INTERVAL, type MotionPoint } from '@/lib/table/motion';
 import { HostedConnection, type RoomTransport } from './hosted-connection';
 
 export type CommandInput = RoomCommand extends infer C ? C extends RoomCommand ? Omit<C, 'id' | 'baseRevision' | 'sceneId' | 'expectedRoomRevision'> : never : never;
@@ -63,7 +63,7 @@ export function useTableRoom(campaignId: string) {
               const summaries = sceneSummarySchema.array().parse(message.scenes);
               setScenes(summaries); setActiveSceneId(message.activeSceneId); roomRevisionRef.current = message.roomRevision;
               if (sceneRef.current?.id !== received.id) { pendingRef.current = null; setPending(false); setOptimistic(null); resetMotions(); }
-              if (message.commandId && localMotions.current.has(message.commandId)) { const motion = localMotions.current.get(message.commandId)!; clearTimeout(motion.timeout); localMotions.current.delete(message.commandId); motionStore.cancel(motion.tokenId, motion.motionId); setMotionPending(localMotions.current.size > 0); }
+              if (message.commandId && localMotions.current.has(message.commandId)) { const motion = localMotions.current.get(message.commandId)!; clearTimeout(motion.timeout); localMotions.current.delete(message.commandId); motionStore.cancelMotion(motion.motionId); setMotionPending(localMotions.current.size > 0); }
               sceneRef.current = received; setScene(received); setPeers(message.peers);
               setBootstrap(previous => previous ? { ...previous, actor: message.actor, roster: message.roster } : previous);
               setConnection('connected'); attempt = 0;
@@ -71,19 +71,23 @@ export function useTableRoom(campaignId: string) {
             } else if (message.type === 'motion-started' || message.type === 'motion-frame') {
               const current = sceneRef.current, token = current?.tokens.find(value => value.id === message.tokenId);
               if (!current || current.id !== message.sceneId || !token || localMotions.current.has(message.motionId)) return;
-              if (Number.isFinite(message.x) && Number.isFinite(message.y)) motionStore.update(token.id, message.motionId, boundedPoint(token, current.gridSize, message), token, { userId: message.userId, name: message.name });
+              if (Number.isFinite(message.x) && Number.isFinite(message.y)) motionStore.updateGroup(current, token, message.motionId, message, { userId: message.userId, name: message.name });
             } else if (message.type === 'motion-committed') {
               const current = sceneRef.current;
               const own = localMotions.current.get(message.motionId);
               if (own) { clearTimeout(own.timeout); localMotions.current.delete(message.motionId); setMotionPending(localMotions.current.size > 0); }
               if (!current || current.id !== message.sceneId) return;
-              const token = tokenSchema.parse(message.token), previous = current.tokens.find(value => value.id === token.id);
-              if (!previous || token.version < previous.version) return;
-              motionStore.finish(token.id, message.motionId, token, previous);
-              const next = { ...current, revision: Math.max(current.revision, message.sceneRevision), updatedAt: Math.max(current.updatedAt, message.updatedAt), tokens: current.tokens.map(value => value.id === token.id ? token : value) };
+              const committed = tokenSchema.array().parse(message.tokens ?? [message.token]);
+              const changed = new Map<string, TableToken>();
+              for (const token of committed) {
+                const previous = current.tokens.find(value => value.id === token.id);
+                if (!previous || token.version < previous.version) continue;
+                motionStore.finish(token.id, message.motionId, token, previous); changed.set(token.id, token);
+              }
+              const next = { ...current, revision: Math.max(current.revision, message.sceneRevision), updatedAt: Math.max(current.updatedAt, message.updatedAt), tokens: current.tokens.map(value => changed.get(value.id) ?? value) };
               sceneRef.current = next; setScene(next);
             } else if (message.type === 'motion-cancelled' || message.type === 'motion-rejected') {
-              motionStore.cancel(message.tokenId, message.motionId);
+              motionStore.cancelMotion(message.motionId);
               const own = localMotions.current.get(message.motionId);
               if (own) { clearTimeout(own.timeout); localMotions.current.delete(message.motionId); setMotionPending(localMotions.current.size > 0); }
               if (message.type === 'motion-rejected' && own) setError(message.message);
@@ -122,6 +126,8 @@ export function useTableRoom(campaignId: string) {
   const startMotion = useCallback((token: TableToken) => {
     const socket = socketRef.current, scene = sceneRef.current;
     if (socket?.readyState !== WebSocket.OPEN || !scene || pendingRef.current) return false;
+    const grabbed = scene.tokens.find(value => value.id === token.id); if (!grabbed) return false;
+    token = linkedTokens(scene, grabbed)[0];
     const track = motionStore.tracks.get(token.id);
     if (track && !track.local && !track.finished && track.expires > performance.now()) { setError('Этот токен сейчас двигает другой участник.'); return false; }
     const previous = [...localMotions.current.values()].filter(value => value.tokenId === token.id && value.sceneId === scene.id);
@@ -131,20 +137,25 @@ export function useTableRoom(campaignId: string) {
       expectedVersion: Math.max(canonical.version, ...previous.map(value => value.expectedVersion + 1)), seq: 0, ending: false };
     const point = motionStore.target(canonical);
     localMotions.current.set(motion.motionId, motion); setMotionPending(true); setError('');
-    motionStore.update(token.id, motion.motionId, point, canonical, { local: true });
+    motionStore.updateGroup(scene, canonical, motion.motionId, point, { local: true });
     socket.send(JSON.stringify({ type: 'motion-start', motionId: motion.motionId, sceneId: scene.id, tokenId: token.id, expectedVersion: motion.expectedVersion }));
     return true;
   }, [motionStore]);
   const previewMotion = useCallback((token: TableToken, point: MotionPoint, duration = 0) => {
-    const scene = sceneRef.current, motion = [...localMotions.current.values()].find(value => value.tokenId === token.id && !value.ending);
-    if (!scene || !motion || motion.sceneId !== scene.id) return false;
-    motionStore.update(token.id, motion.motionId, boundedPoint(token, scene.gridSize, point), token, { local: true, duration }); return true;
+    const scene = sceneRef.current;
+    if (!scene) return false;
+    const grabbed = scene.tokens.find(value => value.id === token.id); if (!grabbed) return false;
+    const anchor = linkedTokens(scene, grabbed)[0];
+    const motion = [...localMotions.current.values()].find(value => value.tokenId === anchor.id && !value.ending);
+    if (!motion || motion.sceneId !== scene.id) return false;
+    motionStore.updateGroup(scene, anchor, motion.motionId, { x: point.x + anchor.x - grabbed.x, y: point.y + anchor.y - grabbed.y }, { local: true, duration }); return true;
   }, [motionStore]);
   const endMotion = useCallback((tokenId: string) => {
-    const motion = [...localMotions.current.values()].find(value => value.tokenId === tokenId && !value.ending), scene = sceneRef.current;
-    const socket = socketRef.current;
-    if (!motion || !scene || motion.sceneId !== scene.id || socket?.readyState !== WebSocket.OPEN) return;
-    const token = scene.tokens.find(value => value.id === tokenId); if (!token) return;
+    const scene = sceneRef.current, socket = socketRef.current;
+    const grabbed = scene?.tokens.find(value => value.id === tokenId); if (!scene || !grabbed) return;
+    const token = linkedTokens(scene, grabbed)[0]; tokenId = token.id;
+    const motion = [...localMotions.current.values()].find(value => value.tokenId === tokenId && !value.ending);
+    if (!motion || motion.sceneId !== scene.id || socket?.readyState !== WebSocket.OPEN) return;
     motion.ending = true;
     socket.send(JSON.stringify({ type: 'motion-end', motionId: motion.motionId, sceneId: motion.sceneId, tokenId, seq: ++motion.seq, ...motionStore.target(token) }));
     motion.timeout = setTimeout(() => { setError('Подтверждение движения задержалось. Восстанавливаем соединение…'); socket.close(); }, 10000);
@@ -161,7 +172,7 @@ export function useTableRoom(campaignId: string) {
       if (socket?.readyState !== WebSocket.OPEN || socket.bufferedAmount > 65536 || !scene) return;
       for (const motion of localMotions.current.values()) if (!motion.ending && motion.sceneId === scene.id) {
         const token = scene.tokens.find(value => value.id === motion.tokenId); if (!token) continue;
-        const track = motionStore.tracks.get(token.id); if (track?.motionId === motion.motionId) track.expires = performance.now() + 4000;
+        for (const member of linkedTokens(scene, token)) { const track = motionStore.tracks.get(member.id); if (track?.motionId === motion.motionId) track.expires = performance.now() + 4000; }
         socket.send(JSON.stringify({ type: 'motion-frame', motionId: motion.motionId, sceneId: motion.sceneId, tokenId: motion.tokenId, seq: ++motion.seq, ...motionStore.position(token.id, token) }));
       }
     }, MOTION_INTERVAL);

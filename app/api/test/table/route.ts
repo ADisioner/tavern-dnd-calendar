@@ -1,3 +1,4 @@
+import { MAX_TABLE_MESSAGE_BYTES } from '@/lib/table/motion';
 import { NextRequest } from 'next/server';
 import { env } from 'cloudflare:workers';
 import { z } from 'zod';
@@ -20,8 +21,8 @@ export async function POST(request: NextRequest) {
   let message: unknown;
   try {
     if (request.headers.get('origin') !== request.nextUrl.origin) return Response.json({ error: 'Недопустимый источник запроса.' }, { status: 403, headers });
-    if (Number(request.headers.get('content-length') ?? 0) > 24000) return Response.json({ error: 'Слишком большой запрос.' }, { status: 413, headers });
-    const body = await request.text(); if (body.length > 24000) return Response.json({ error: 'Слишком большой запрос.' }, { status: 413, headers });
+    if (Number(request.headers.get('content-length') ?? 0) > MAX_TABLE_MESSAGE_BYTES) return Response.json({ error: 'Слишком большой запрос.' }, { status: 413, headers });
+    const body = await request.text(); if (new TextEncoder().encode(body).byteLength > MAX_TABLE_MESSAGE_BYTES) return Response.json({ error: 'Слишком большой запрос.' }, { status: 413, headers });
     const raw = JSON.parse(body) as { clientId: string; campaignId: string; preview?: string; message: unknown };
     const client = hostedClient(raw.clientId, raw.campaignId, raw.preview); message = raw.message;
     return Response.json(await hostedMessage(env, request, client, message), { headers });

@@ -1,13 +1,22 @@
 import { z } from 'zod';
+import type { Point } from './geometry.ts';
 
 export type TableMember = { userId: string; name: string; role: string };
 export type TableActor = { userId: string; name: string; role: 'master' | 'player' };
+const maxDrawingCoordinates = 40_000;
 export const tokenSchema = z.object({
   id: z.string().uuid(), name: z.string().trim().min(1).max(40),
   x: z.number().finite().min(0).max(1600), y: z.number().finite().min(0).max(1120),
   size: z.number().min(0.5).max(3), color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   ownerId: z.string().uuid().nullable(), version: z.number().int().nonnegative(),
   assetId: z.string().uuid().optional(),
+  groupId: z.string().uuid().optional(),
+}).strict();
+export const drawingSchema = z.object({
+  id: z.string().uuid(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  width: z.number().finite().min(1).max(40),
+  points: z.array(z.number().finite().min(0)).min(4).max(2048)
+    .refine(points => points.length % 2 === 0 && points.every((value, index) => value <= (index % 2 ? 1120 : 1600)), 'Координаты штриха выходят за границы сцены.'),
 }).strict();
 export const sceneSchema = z.object({
   id: z.string().uuid().default(() => crypto.randomUUID()),
@@ -16,18 +25,30 @@ export const sceneSchema = z.object({
   gridSize: z.number().int().min(20).max(160), gridVisible: z.boolean(),
   tokens: z.array(tokenSchema).max(150), updatedAt: z.number().int(),
   mapAssetId: z.string().uuid().nullable().optional(),
+  drawings: z.array(drawingSchema).max(300)
+    .refine(drawings => drawings.reduce((total, drawing) => total + drawing.points.length, 0) <= maxDrawingCoordinates, 'На сцене доступно до 40000 координат штрихов.').default([]),
 }).strict();
 const envelope = z.object({ id: z.string().uuid(), baseRevision: z.number().int().nonnegative(), sceneId: z.string().uuid().optional() });
+const tokenIds = z.array(z.string().uuid()).min(1).max(150).refine(ids => new Set(ids).size === ids.length, 'Токены не должны повторяться.');
 export const commandSchema = z.discriminatedUnion('type', [
   envelope.extend({ type: z.literal('move'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), x: z.number().finite(), y: z.number().finite() }).strict(),
   envelope.extend({ type: z.literal('update'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), name: z.string().trim().min(1).max(40), size: z.number().min(0.5).max(3), ownerId: z.string().uuid().nullable() }).strict(),
+  envelope.extend({ type: z.literal('remove'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative() }).strict(),
   envelope.extend({ type: z.literal('add'), ownerId: z.string().uuid().nullable(), assetId: z.string().uuid().optional(), name: z.string().trim().min(1).max(40).optional() }).strict(),
   envelope.extend({ type: z.literal('map'), assetId: z.string().uuid().nullable() }).strict(),
   envelope.extend({ type: z.literal('grid'), gridSize: z.number().int().min(20).max(160), gridVisible: z.boolean() }).strict(),
   envelope.extend({ type: z.literal('benchmark') }).strict(),
+  envelope.extend({ type: z.literal('draw'), drawing: drawingSchema }).strict(),
+  envelope.extend({ type: z.literal('erase'), drawingId: z.string().uuid() }).strict(),
+  envelope.extend({ type: z.literal('group'), tokenIds }).strict(),
+  envelope.extend({ type: z.literal('ungroup'), tokenIds }).strict(),
+  envelope.extend({ type: z.literal('remove-many'), tokens: z.array(z.object({ tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative() }).strict()).min(1).max(150)
+    .refine(tokens => new Set(tokens.map(token => token.tokenId)).size === tokens.length, 'Токены не должны повторяться.') }).strict(),
 ]);
 export type TableScene = z.infer<typeof sceneSchema>;
 export type TableToken = z.infer<typeof tokenSchema>;
+export type TableDrawing = z.infer<typeof drawingSchema>;
+export type Drawing = TableDrawing;
 export type TableCommand = z.infer<typeof commandSchema>;
 export class CommandError extends Error {
   code: string;
@@ -35,6 +56,20 @@ export class CommandError extends Error {
 }
 export function canMoveToken(_token: TableToken, actor: TableActor) {
   return actor.role === 'master' || actor.role === 'player';
+}
+export function linkedTokens(scene: TableScene, token: TableToken): TableToken[] {
+  return scene.tokens.filter(value => token.groupId ? value.groupId === token.groupId : value.id === token.id)
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+export function boundedGroupPoint(scene: TableScene, token: TableToken, point: Point): Point {
+  let minX = -Infinity, maxX = Infinity, minY = -Infinity, maxY = Infinity;
+  for (const member of linkedTokens(scene, token)) {
+    const radius = member.size * scene.gridSize / 2;
+    minX = Math.max(minX, radius - member.x); maxX = Math.min(maxX, scene.width - radius - member.x);
+    minY = Math.max(minY, radius - member.y); maxY = Math.min(maxY, scene.height - radius - member.y);
+  }
+  return { x: token.x + Math.max(minX, Math.min(maxX, point.x - token.x)),
+    y: token.y + Math.max(minY, Math.min(maxY, point.y - token.y)) };
 }
 const colors = ['#a8bc8a', '#d4b276', '#87b2c2', '#b49bc9', '#c9939b'];
 function makeToken(index: number, member?: TableMember): TableToken {
@@ -46,22 +81,64 @@ function makeToken(index: number, member?: TableMember): TableToken {
 export function createPrototypeScene(campaignId: string, roster: TableMember[]): TableScene {
   return { id: crypto.randomUUID(), schemaVersion: 1, campaignId, name: 'Таверна у старого тракта', revision: 0,
     width: 1600, height: 1120, gridSize: 80, gridVisible: true, updatedAt: Date.now(),
-    tokens: Array.from({ length: Math.max(8, roster.length) }, (_, i) => makeToken(i, roster[i])) };
+    tokens: Array.from({ length: Math.max(8, roster.length) }, (_, i) => makeToken(i, roster[i])), drawings: [] };
 }
 export function applyTableCommand(scene: TableScene, command: TableCommand, actor: TableActor, roster: TableMember[]): TableScene {
+  if (actor.role !== 'master' && actor.role !== 'player') throw new CommandError('forbidden', 'Нет доступа к изменению сцены.');
+  if (command.sceneId && command.sceneId !== scene.id) throw new CommandError('forbidden', 'Эта сцена недоступна.');
   if (command.baseRevision > scene.revision) throw new CommandError('revision', 'Обновите состояние сцены.');
-  const next: TableScene = { ...scene, tokens: scene.tokens.map(t => ({ ...t })), revision: scene.revision + 1, updatedAt: Date.now() };
-  if (command.type === 'move' || command.type === 'update') {
+  const next: TableScene = { ...scene, tokens: scene.tokens.map(t => ({ ...t })), drawings: (scene.drawings ?? []).map(d => ({ ...d, points: [...d.points] })), revision: scene.revision + 1, updatedAt: Date.now() };
+  if (command.type === 'remove-many') {
+    for (const expected of command.tokens) {
+      const token = next.tokens.find(value => value.id === expected.tokenId);
+      if (!token) throw new CommandError('missing', 'Токен больше не существует.');
+      if (token.version !== expected.expectedVersion) throw new CommandError('conflict', 'Токен уже изменён. Повторите действие.');
+    }
+    const ids = new Set(command.tokens.map(value => value.tokenId));
+    next.tokens = next.tokens.filter(token => !ids.has(token.id));
+    return sceneSchema.parse(next);
+  }
+  if (command.type === 'draw' || command.type === 'erase' || command.type === 'group' || command.type === 'ungroup') {
+    if ((command.type === 'group' || command.type === 'ungroup') && command.baseRevision !== scene.revision) throw new CommandError('conflict', 'Сцена изменилась. Повторите действие.');
+    if (command.type === 'draw') {
+      if (next.drawings.some(drawing => drawing.id === command.drawing.id)) throw new CommandError('conflict', 'Штрих уже существует.');
+      if (next.drawings.length >= 300) throw new CommandError('limit', 'На сцене доступно до 300 штрихов.');
+      if (next.drawings.reduce((total, drawing) => total + drawing.points.length, command.drawing.points.length) > maxDrawingCoordinates) throw new CommandError('limit', 'На сцене доступно до 40000 координат штрихов.');
+      next.drawings.push({ ...command.drawing, points: [...command.drawing.points] });
+    } else if (command.type === 'erase') {
+      if (!next.drawings.some(drawing => drawing.id === command.drawingId)) throw new CommandError('missing', 'Штрих больше не существует.');
+      next.drawings = next.drawings.filter(drawing => drawing.id !== command.drawingId);
+    } else {
+      const selected = command.tokenIds.map(id => {
+        const token = next.tokens.find(value => value.id === id);
+        if (!token) throw new CommandError('missing', 'Токен больше не существует.');
+        return token;
+      });
+      const ids = new Set(selected.flatMap(token => linkedTokens(next, token).map(value => value.id)));
+      if (command.type === 'group' && ids.size < 2) throw new CommandError('selection', 'Выберите хотя бы две фигуры.');
+      for (const token of next.tokens) if (ids.has(token.id)) {
+        if (command.type === 'group') { token.groupId = command.id; token.version++; }
+        else if (token.groupId) { delete token.groupId; token.version++; }
+      }
+    }
+    return sceneSchema.parse(next);
+  }
+  if (command.type === 'move' || command.type === 'update' || command.type === 'remove') {
     const token = next.tokens.find(t => t.id === command.tokenId);
     if (!token) throw new CommandError('missing', 'Токен больше не существует.');
     if (!canMoveToken(token, actor)) throw new CommandError('forbidden', 'Нет доступа к движению токенов.');
     if (token.version !== command.expectedVersion) throw new CommandError('conflict', 'Токен уже изменён. Повторите действие.');
+    if (command.type === 'remove') {
+      next.tokens = next.tokens.filter(value => value.id !== token.id);
+      return sceneSchema.parse(next);
+    }
     if (command.type === 'move') {
-      const radius = token.size * scene.gridSize / 2;
-      token.x = Math.max(radius, Math.min(scene.width - radius, command.x));
-      token.y = Math.max(radius, Math.min(scene.height - radius, command.y));
+      const point = boundedGroupPoint(next, token, command), dx = point.x - token.x, dy = point.y - token.y;
+      for (const member of linkedTokens(next, token)) {
+        member.x += dx; member.y += dy; member.version++;
+      }
+      return sceneSchema.parse(next);
     } else {
-      if (actor.role !== 'master') throw new CommandError('forbidden', 'Свойства токена меняет мастер.');
       if (command.ownerId && !roster.some(m => m.userId === command.ownerId)) throw new CommandError('owner', 'Управляющий должен состоять в кампании.');
       Object.assign(token, { name: command.name, size: command.size, ownerId: command.ownerId });
       const radius = token.size * scene.gridSize / 2;

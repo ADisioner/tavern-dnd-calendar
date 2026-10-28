@@ -6,7 +6,8 @@ import type { MotionStore, MotionPoint } from '@/lib/table/motion';
 
 type KeyboardState = { scene: TableScene | null; actor: TableActor | undefined; selectedId: string | null;
   connection: string; pending: boolean; motionStore: MotionStore; startMotion: (token: TableToken) => boolean;
-  previewMotion: (token: TableToken, point: MotionPoint, duration?: number) => boolean; endMotion: (tokenId: string) => void };
+  previewMotion: (token: TableToken, point: MotionPoint, duration?: number) => boolean; endMotion: (tokenId: string) => void;
+  removeToken: (token: TableToken) => unknown };
 const directions: Record<string, { x: number; y: number }> = { KeyW: { x: 0, y: -1 }, KeyA: { x: -1, y: 0 }, KeyS: { x: 0, y: 1 }, KeyD: { x: 1, y: 0 } };
 const editing = (target: EventTarget | null) => target instanceof Element && !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]');
 export function useTokenKeyboard(state: KeyboardState) {
@@ -33,6 +34,16 @@ export function useTokenKeyboard(state: KeyboardState) {
     }
     function down(event: KeyboardEvent) {
       if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) { stop(); return; }
+      if (event.code === 'Delete') {
+        if (event.repeat || event.shiftKey || document.querySelector('dialog[open]') || editing(event.target)) return;
+        const { scene, actor, selectedId, connection, pending, removeToken } = latest.current;
+        const token = scene?.tokens.find(value => value.id === selectedId);
+        if (!token || !actor || !canMoveToken(token, actor) || connection !== 'connected' || pending) return;
+        event.preventDefault();
+        // Finish a held WASD gesture first; a second Delete can act on its confirmed version.
+        if (movingToken) { stop(); return; }
+        removeToken(token); return;
+      }
       if (!directions[event.code]) return;
       if (document.querySelector('dialog[open]') || editing(event.target)) return;
       const { scene, actor, selectedId, connection, startMotion } = latest.current;

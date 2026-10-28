@@ -1,8 +1,8 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type ComponentType, type FormEvent } from 'react';
-import { ArrowLeft, MousePointer2, Hand, Grid2X2, Plus, Sun, Moon, RefreshCw, ArrowUp, ArrowDown, ArrowRight, ArrowLeft as MoveLeft, Users, Layers, Swords, FolderOpen } from 'lucide-react';
-import { canMoveToken, type TableToken } from '@/lib/table/scene';
+import { ArrowLeft, MousePointer2, Hand, Grid2X2, Plus, Sun, Moon, RefreshCw, ArrowUp, ArrowDown, ArrowRight, ArrowLeft as MoveLeft, Users, Layers, Swords, FolderOpen, Trash2, Pencil, Eraser, Link2, Unlink2 } from 'lucide-react';
+import { canMoveToken, linkedTokens, type TableToken } from '@/lib/table/scene';
 import type { Point } from '@/lib/table/geometry';
 import { useTableRoom } from './use-table-room';
 import { useTokenKeyboard } from './use-token-keyboard';
@@ -16,13 +16,22 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
   const router = useRouter();
   const room = useTableRoom(campaignId);
   const [Canvas, setCanvas] = useState<ComponentType<TableCanvasProps> | null>(null);
-  const [tool, setTool] = useState<'select' | 'pan'>('select');
-  const [snap, setSnap] = useState(true), [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tool, setTool] = useState<'select' | 'pan' | 'draw' | 'erase'>('select');
+  const [snap, setSnap] = useState(true), [selection, setSelection] = useState<string[]>([]);
+  const [brushColor, setBrushColor] = useState('#d0ae72'), [brushWidth, setBrushWidth] = useState(4);
+  function expandedSelection(ids: string[]) {
+    const current = room.scene; if (!current) return [];
+    const valid = ids.filter(id => current.tokens.some(token => token.id === id));
+    const expanded = new Set(valid.flatMap(id => linkedTokens(current, current.tokens.find(token => token.id === id)!).map(token => token.id)));
+    return [...expanded].filter(id => !valid.includes(id)).concat(valid);
+  }
+  const selectedIds = expandedSelection(selection);
+  const selectedId = selectedIds.at(-1) ?? null;
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [timezone, setTimezone] = useState('UTC');
   useTokenKeyboard({ scene: room.scene, actor: room.bootstrap?.actor, selectedId, connection: room.connection, pending: room.pending,
-    motionStore: room.motionStore, startMotion: room.startMotion, previewMotion: room.previewMotion, endMotion: room.endMotion });
+    motionStore: room.motionStore, startMotion: room.startMotion, previewMotion: room.previewMotion, endMotion: room.endMotion, removeToken });
   useEffect(() => {
     let active = true;
     void import('./table-canvas').then(module => { if (active) setCanvas(() => module.default); });
@@ -52,6 +61,32 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     if (!room.startMotion(token)) return false;
     room.previewMotion(token, point, 85); room.endMotion(token.id); return true;
   }
+  function removeToken(token: TableToken) {
+    const tokens = scene?.tokens.filter(value => selectedIds.includes(value.id)) ?? [];
+    return tokens.length > 1
+      ? room.send({ type: 'remove-many', tokens: tokens.map(value => ({ tokenId: value.id, expectedVersion: value.version })) })
+      : room.send({ type: 'remove', tokenId: token.id, expectedVersion: token.version });
+  }
+  function selectToken(id: string | null, additive = false) {
+    if (!id || !scene) { if (!additive) setSelection([]); return; }
+    const token = scene.tokens.find(value => value.id === id); if (!token) return;
+    const ids = linkedTokens(scene, token).map(value => value.id);
+    // Keep the clicked token primary in the inspector, even if its group anchor differs.
+    const ordered = [...ids.filter(value => value !== id), id];
+    setSelection(current => {
+      const expanded = expandedSelection(current);
+      return additive ? (ids.every(value => expanded.includes(value)) ? expanded.filter(value => !ids.includes(value)) : [...expanded.filter(value => !ids.includes(value)), ...ordered]) : ordered;
+    });
+  }
+  function selectMany(ids: string[], additive = false) {
+    if (!scene) return;
+    const expanded = new Set<string>();
+    for (const id of ids) {
+      const token = scene.tokens.find(value => value.id === id);
+      if (token) for (const member of linkedTokens(scene, token)) expanded.add(member.id);
+    }
+    setSelection(current => [...new Set([...(additive ? current : []), ...expanded])]);
+  }
   function updateToken(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!selected) return;
     const form = new FormData(event.currentTarget);
@@ -65,23 +100,33 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     {room.connection === 'offline' && scene && <div className="table-notice">Соединение потеряно. На карте — последнее подтверждённое состояние. <button className="text-button" onClick={room.reconnect}><RefreshCw size={14}/>Подключиться</button></div>}
     {previewing && scene && <div className="scene-preview-notice" role="status"><span>За ширмой: <strong>{scene.name}</strong>. Группа остаётся на сцене «{activeSceneName}».</span><button className="small-button" disabled={disabled} onClick={() => room.send({ type: 'scene-activate', targetSceneId: scene.id })}>Показать группе</button><button className="text-button" disabled={disabled} onClick={() => room.send({ type: 'scene-view', targetSceneId: room.activeSceneId })}>Вернуться к группе</button></div>}
     <div className="table-main">
-      <aside className="table-tools" aria-label="Инструменты карты"><button className="table-tool" title="Выбор токенов" aria-label="Выбор токенов" aria-pressed={tool === 'select'} onClick={() => setTool('select')}><MousePointer2 size={20}/></button><button className="table-tool" title="Перемещение карты" aria-label="Перемещение карты" aria-pressed={tool === 'pan'} onClick={() => setTool('pan')}><Hand size={21}/></button><button className="table-tool" title="Привязка к клеткам" aria-label="Привязка к клеткам" aria-pressed={snap} onClick={() => setSnap(value => !value)}><Grid2X2 size={20}/></button><button className="table-tool" title="Добавить токен" aria-label="Добавить токен" disabled={disabled} onClick={() => room.send({ type: 'add', ownerId: actor?.userId ?? null })}><Plus size={22}/></button><button className="table-tool" title="Библиотека материалов" aria-label="Библиотека материалов" onClick={() => setLibraryOpen(true)}><FolderOpen size={21}/></button></aside>
-      {Canvas && shownScene && actor ? <Canvas key={shownScene.id} scene={shownScene} actor={actor} selectedId={selectedId} tool={tool} snap={snap} pending={disabled} onSelect={setSelectedId} onMove={move} motionStore={room.motionStore} onMotionStart={room.startMotion} onMotionPreview={room.previewMotion} onMotionEnd={room.endMotion}/> : <div className="table-stage-wrap"><div className="table-stage-loading">Готовим карту и фигурки…</div></div>}
+      <aside className="table-tools" aria-label="Инструменты карты"><button className="table-tool" title="Выбор токенов" aria-label="Выбор токенов" aria-pressed={tool === 'select'} onClick={() => setTool('select')}><MousePointer2 size={20}/></button><button className="table-tool" title="Перемещение карты" aria-label="Перемещение карты" aria-pressed={tool === 'pan'} onClick={() => setTool('pan')}><Hand size={21}/></button><button className="table-tool" title="Привязка к клеткам" aria-label="Привязка к клеткам" aria-pressed={snap} onClick={() => setSnap(value => !value)}><Grid2X2 size={20}/></button><button className="table-tool" title="Кисть" aria-label="Кисть" aria-pressed={tool === 'draw'} onClick={() => setTool('draw')}><Pencil size={20}/></button><button className="table-tool" title="Ластик" aria-label="Ластик" aria-pressed={tool === 'erase'} onClick={() => setTool('erase')}><Eraser size={20}/></button><button className="table-tool" title="Добавить токен" aria-label="Добавить токен" disabled={disabled} onClick={() => room.send({ type: 'add', ownerId: actor?.userId ?? null })}><Plus size={22}/></button><button className="table-tool" title="Библиотека материалов" aria-label="Библиотека материалов" onClick={() => setLibraryOpen(true)}><FolderOpen size={21}/></button></aside>
+      {Canvas && shownScene && actor ? <Canvas key={shownScene.id} scene={shownScene} actor={actor} selectedId={selectedId} tool={tool} snap={snap} pending={disabled} selectedIds={selectedIds} onSelect={selectToken} onSelectMany={selectMany} brushColor={brushColor} brushWidth={brushWidth} onDraw={drawing => room.send({ type: 'draw', drawing })} onErase={drawingId => room.send({ type: 'erase', drawingId })} onMove={move} motionStore={room.motionStore} onMotionStart={room.startMotion} onMotionPreview={room.previewMotion} onMotionEnd={room.endMotion}/> : <div className="table-stage-wrap"><div className="table-stage-loading">Готовим карту и фигурки…</div></div>}
       <aside className="table-inspector" aria-label="Настройки игрового стола">
         {master && scene && <SceneLibrary scenes={room.scenes} activeSceneId={room.activeSceneId} viewedSceneId={scene.id} disabled={disabled} send={room.send}/>}
         <section className="table-card"><div className="table-section-heading"><Layers size={17}/> Сцена</div><h2>{scene?.name || 'Готовим таверну…'}</h2><p>Поле 1600 × 1120 px · {scene?.mapAssetId ? 'ваша карта' : 'карта таверны'}. Карта, сетка и токены сохраняются для этой кампании.</p><button className="small-button library-open-button" onClick={() => setLibraryOpen(true)}><FolderOpen size={16}/> Открыть библиотеку</button>{master && scene?.mapAssetId && <button className="text-button" disabled={disabled} onClick={() => room.send({ type: 'map', assetId: null })}>Вернуть карту таверны</button>}<span className="table-chip">{scene?.tokens.length ?? 0} токенов · ревизия {scene?.revision ?? 0}</span>
           {scene && <form key={scene.gridSize + ':' + scene.gridVisible} onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); room.send({ type: 'grid', gridSize: Number(form.get('gridSize')), gridVisible: form.get('gridVisible') === 'yes' }); }}><div className="table-field-row"><label>Размер клетки<select name="gridSize" defaultValue={scene.gridSize} disabled={!master || disabled}>{[40, 60, 80, 100, 120].map(value => <option key={value} value={value}>{value} px</option>)}</select></label><label>Сетка<select name="gridVisible" defaultValue={scene.gridVisible ? 'yes' : 'no'} disabled={!master || disabled}><option value="yes">Включена</option><option value="no">Скрыта</option></select></label></div>{master && <button className="small-button" disabled={disabled}>Применить сетку</button>}</form>}
         </section>
-        <section className="table-card"><div className="table-section-heading"><Users size={17}/> За столом · {room.peers.length}</div><div className="table-participants">{room.peers.map(peer => <span className="table-chip" key={peer.userId}>{peer.name}{peer.role === 'master' ? ' · мастер' : ''}</span>)}</div><p>{'Все участники могут добавлять и двигать любые токены. Настройки сцены меняет мастер.'}</p></section>
-        <section className="table-card"><h2>{selected ? 'Выбранный токен' : 'Токены сцены'}</h2>
+        <section className="table-card"><div className="table-section-heading"><Users size={17}/> За столом · {room.peers.length}</div><div className="table-participants">{room.peers.map(peer => <span className="table-chip" key={peer.userId}>{peer.name}{peer.role === 'master' ? ' · мастер' : ''}</span>)}</div><p>{'Все участники могут добавлять, двигать, редактировать и удалять любые токены. Настройки сцены меняет мастер.'}</p></section>
+        {(tool === 'draw' || tool === 'erase') && <section className="table-card table-brush-card"><h2>{tool === 'draw' ? 'Кисть' : 'Ластик'}</h2>
+          {tool === 'draw' ? <div className="table-field-row"><label>Цвет<input type="color" value={brushColor} onChange={event => setBrushColor(event.target.value)}/></label><label>Толщина<select value={brushWidth} onChange={event => setBrushWidth(Number(event.target.value))}>{[2, 4, 8, 12].map(width => <option value={width} key={width}>{width} px</option>)}</select></label></div> : <p>Нажмите на линию, чтобы стереть весь штрих.</p>}
+          <p>Рисунки видны всем участникам и сохраняются на сцене.</p>
+        </section>}
+        <section className="table-card"><h2>{selectedIds.length > 1 ? `Выбрано токенов: ${selectedIds.length}` : selected ? 'Выбранный токен' : 'Токены сцены'}</h2>
+          {selected && <div className="table-selection-actions">
+            <button className="small-button" disabled={disabled || selectedIds.length < 2} onClick={() => room.send({ type: 'group', tokenIds: selectedIds })}><Link2 size={16}/> Склеить</button>
+            <button className="small-button" disabled={disabled || !scene?.tokens.some(token => selectedIds.includes(token.id) && token.groupId)} onClick={() => room.send({ type: 'ungroup', tokenIds: selectedIds })}><Unlink2 size={16}/> Разъединить</button>
+            {selectedIds.length > 1 && <button className="text-button" onClick={() => setSelection([])}>Снять выделение</button>}
+          </div>}
           {selected && <><div className="table-token-heading"><span className="table-token-avatar" style={{ borderColor: selected.color }}>{selected.assetId ? <img src={assetUrl(campaignId, selected.assetId)} alt=""/> : selected.name.slice(0, 2)}</span><strong>{selected.name}</strong></div><p>X {Math.round(selected.x)} · Y {Math.round(selected.y)} · {selected.size} клетки</p>
             <div className="table-nudge" aria-label="Переместить выбранный токен">{[{ x: -1, y: 0, icon: MoveLeft, label: 'Влево' }, { x: 0, y: -1, icon: ArrowUp, label: 'Вверх' }, { x: 0, y: 1, icon: ArrowDown, label: 'Вниз' }, { x: 1, y: 0, icon: ArrowRight, label: 'Вправо' }].map(({ x, y, icon: Icon, label }) => <button className="small-button" key={label} aria-label={label} disabled={!canMove || disabled} onClick={() => move(selected, { x: selected.x + x * scene!.gridSize, y: selected.y + y * scene!.gridSize })}><Icon size={16}/></button>)}</div><p className="table-keyboard-hint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — шаг на клетку · удерживайте для движения</p>
-            {master && <form key={selected.id + ':' + selected.name + ':' + selected.size + ':' + selected.ownerId} onSubmit={updateToken}><label>Имя токена<input name="name" defaultValue={selected.name} maxLength={40} required disabled={disabled}/></label><div className="table-field-row"><label>Размер<select name="size" defaultValue={selected.size} disabled={disabled}>{[0.5, 1, 2, 3].map(value => <option key={value} value={value}>{value} кл.</option>)}</select></label><label>Владелец<select name="ownerId" defaultValue={selected.ownerId ?? ''} disabled={disabled}><option value="">Мастер</option>{bootstrap?.roster.map(member => <option value={member.userId} key={member.userId}>{member.name}</option>)}</select></label></div><button className="small-button" disabled={disabled}>Сохранить токен</button></form>}
+            <form key={selected.id + ':' + selected.name + ':' + selected.size + ':' + selected.ownerId} onSubmit={updateToken}><label>Имя токена<input name="name" defaultValue={selected.name} maxLength={40} required disabled={disabled}/></label><div className="table-field-row"><label>Размер<select name="size" defaultValue={selected.size} disabled={disabled}>{[0.5, 1, 2, 3].map(value => <option key={value} value={value}>{value} кл.</option>)}</select></label><label>Владелец<select name="ownerId" defaultValue={selected.ownerId ?? ''} disabled={disabled}><option value="">Мастер</option>{bootstrap?.roster.map(member => <option value={member.userId} key={member.userId}>{member.name}</option>)}</select></label></div><button className="small-button" disabled={disabled}>Сохранить токен</button></form>
+            <button className="table-action table-delete-token" disabled={disabled} onClick={() => removeToken(selected)}><Trash2 size={16}/> {selectedIds.length > 1 ? 'Удалить выбранные' : 'Удалить с карты'} <kbd>Del</kbd></button>
           </>}
-          <div className="table-token-list" aria-label="Список токенов">{scene?.tokens.map(token => <button key={token.id} aria-pressed={selectedId === token.id} onClick={() => setSelectedId(token.id)}><span style={{ color: token.color }}>●</span><span>{token.name}</span><small>{'Двигать'}</small></button>)}</div>
+          <div className="table-token-list" aria-label="Список токенов">{scene?.tokens.map(token => <button key={token.id} aria-pressed={selectedIds.includes(token.id)} onClick={event => selectToken(token.id, event.shiftKey)}><span style={{ color: token.color }}>●</span><span>{token.name}</span><small>{token.groupId ? 'В группе' : 'Выбрать'}</small></button>)}</div>
         </section>
         {master && <section className="table-card"><div className="table-section-heading"><Swords size={17}/> Проверка большой сцены</div><p>Добавляет фигуры до 100, сохраняя существующие токены.</p><button className="small-button" disabled={disabled || (scene?.tokens.length ?? 0) >= 100} onClick={() => room.send({ type: 'benchmark' })}>Добавить до 100 токенов</button></section>}
-        <div className="table-shortcuts"><kbd>W A S D</kbd> — двигать выбранный токен (Ц Ф Ы В)<br/><kbd>СКМ</kbd> или <kbd>Пробел</kbd> + перетаскивание — камера<br/><kbd>Ctrl</kbd> / <kbd>Alt</kbd> — двигать без привязки<br/>Колесо или жест — масштаб</div>
+        <div className="table-shortcuts"><kbd>W A S D</kbd> — двигать выбранный токен (Ц Ф Ы В)<br/><kbd>СКМ</kbd> или <kbd>Пробел</kbd> + перетаскивание — камера<br/><kbd>Ctrl</kbd> / <kbd>Alt</kbd> — двигать без привязки<br/><kbd>Del</kbd> — удалить выбранные токены<br/><kbd>Shift</kbd> + клик — добавить к выбору<br/>Рамка на пустом месте — выбрать несколько<br/>Колесо или жест — масштаб</div>
       </aside>
     </div>{libraryOpen && actor && <TableLibrary campaignId={campaignId} actor={actor} version={room.libraryVersion} disabled={disabled} actionError={room.error} onClose={() => setLibraryOpen(false)} onAdd={asset => room.send({ type: 'add', ownerId: actor.userId, assetId: asset.id, name: asset.name.replace(/\.[^.]+$/, '').slice(0, 40) || 'Токен' })} onMap={asset => room.send({ type: 'map', assetId: asset.id })}/>}<footer className="table-status-bar"><span>Таверна · игровой стол</span><span>{scene ? `Сохранено в ${new Intl.DateTimeFormat('ru-RU', { timeZone: timezone, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(scene.updatedAt)}` : 'Подключение к кампании…'}</span><span>Карта · токены · общая сцена</span></footer>
   </div>;

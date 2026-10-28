@@ -40,9 +40,13 @@ export async function readHostedRoom(env: HostedEnv, actor: HostedActor) {
   if (state.data.campaignId !== actor.campaignId) throw new CommandError('forbidden', 'Нет доступа к сцене.');
   return { state, version: row.version };
 }
-export async function saveHostedRoom(env: HostedEnv, campaignId: string, version: number, state: StoredRoom, lease?: { motionId: string; clientId: string }) {
-  const query = lease ? "UPDATE test_table_rooms SET payload=?,version=version+1 WHERE campaign_id=? AND version=? AND EXISTS(SELECT 1 FROM test_table_motions WHERE campaign_id=? AND motion_id=? AND client_id=? AND status='committing' AND expires>?)" : 'UPDATE test_table_rooms SET payload=?,version=version+1 WHERE campaign_id=? AND version=?';
+export async function saveHostedRoom(env: HostedEnv, campaignId: string, version: number, state: StoredRoom, lease?: { motionId: string; clientId: string }, idleToken?: { sceneId: string; tokenIds: string[] }) {
+  let query = lease ? "UPDATE test_table_rooms SET payload=?,version=version+1 WHERE campaign_id=? AND version=? AND EXISTS(SELECT 1 FROM test_table_motions WHERE campaign_id=? AND motion_id=? AND client_id=? AND status='committing' AND expires>?)" : 'UPDATE test_table_rooms SET payload=?,version=version+1 WHERE campaign_id=? AND version=?';
   const values = lease ? [JSON.stringify(state), campaignId, version, campaignId, lease.motionId, lease.clientId, Date.now()] : [JSON.stringify(state), campaignId, version];
+  if (idleToken?.tokenIds.length) {
+    query += ` AND NOT EXISTS(SELECT 1 FROM test_table_motions WHERE campaign_id=? AND scene_id=? AND token_id IN (SELECT value FROM json_each(?)) AND status IN ('moving','committing') AND expires>?)`;
+    values.push(campaignId, idleToken.sceneId, JSON.stringify(idleToken.tokenIds), Date.now());
+  }
   const result = await requireDb(env).prepare(query).bind(...values).run();
   return result.meta.changes === 1;
 }

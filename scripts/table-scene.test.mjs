@@ -84,20 +84,45 @@ test('a different token can move from an older global baseRevision when its vers
   assert.equal(updated.tokens[1].version, untouchedToken.version + 1);
 });
 
-test('players cannot change the grid, run the benchmark, or update token properties', () => {
+test('players cannot change the grid, map or run the benchmark', () => {
   const scene = createPrototypeScene(crypto.randomUUID(), roster);
   const token = scene.tokens[0];
   const commands = [
     { id: commandId(), baseRevision: 0, type: 'grid', gridSize: 40, gridVisible: false },
     { id: commandId(), baseRevision: 0, type: 'benchmark' },
     { id: commandId(), baseRevision: 0, type: 'map', assetId: null },
-    { id: commandId(), baseRevision: 0, type: 'update', tokenId: token.id, expectedVersion: token.version,
-      name: 'Updated', size: token.size, ownerId: playerAId },
   ];
 
   for (const rawCommand of commands) {
     const command = commandSchema.parse(rawCommand);
     expectCommandError(() => applyTableCommand(scene, command, playerA, roster), 'forbidden');
+  }
+});
+
+test('players can edit any token while owner validation remains enforced', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  for (const token of scene.tokens) {
+    const command = commandSchema.parse({ id: commandId(), baseRevision: scene.revision, type: 'update',
+      tokenId: token.id, expectedVersion: token.version, name: 'Renamed', size: 2, ownerId: playerBId });
+    const updated = applyTableCommand(scene, command, playerA, roster);
+    assert.equal(updated.tokens.find(value => value.id === token.id).name, 'Renamed');
+    assert.equal(updated.tokens.find(value => value.id === token.id).size, 2);
+    expectCommandError(() => applyTableCommand(scene, { ...command, ownerId: outsiderId }, playerA, roster), 'owner');
+    expectCommandError(() => applyTableCommand(updated, { ...command, baseRevision: updated.revision }, playerA, roster), 'conflict');
+  }
+});
+
+test('all participants can remove any token without mutating the source scene', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  for (const actor of [master, playerA, playerB]) for (const token of scene.tokens) {
+    const command = commandSchema.parse({ id: commandId(), baseRevision: scene.revision, type: 'remove',
+      tokenId: token.id, expectedVersion: token.version });
+    const updated = applyTableCommand(scene, command, actor, roster);
+    assert.deepEqual(updated.tokens, scene.tokens.filter(value => value.id !== token.id));
+    assert.equal(updated.revision, scene.revision + 1);
+    assert.equal(scene.tokens.length, 8);
+    expectCommandError(() => applyTableCommand(updated, { ...command, baseRevision: updated.revision }, actor, roster), 'missing');
+    expectCommandError(() => applyTableCommand(scene, { ...command, expectedVersion: token.version + 1 }, actor, roster), 'conflict');
   }
 });
 
@@ -176,4 +201,124 @@ test('existing scene saves remain compatible; map changes preserve existing toke
   const updated = applyTableCommand(scene, commandSchema.parse({ type: 'map', id: commandId(), baseRevision: 0, assetId }), master, roster);
   assert.equal(updated.mapAssetId, assetId);
   assert.deepEqual(updated.tokens, scene.tokens);
+});
+
+const sceneCommand = (scene, type, fields = {}) => commandSchema.parse({ id: commandId(), baseRevision: scene.revision, type, ...fields });
+const stroke = () => ({ id: commandId(), color: '#a8bc8a', width: 4, points: [10, 20, 40, 60] });
+
+test('old scene saves acquire empty drawings and retain optional group ids', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  delete scene.drawings;
+  assert.deepEqual(sceneSchema.parse(scene).drawings, []);
+  scene.tokens[0].groupId = commandId();
+  assert.equal(sceneSchema.parse(scene).tokens[0].groupId, scene.tokens[0].groupId);
+});
+
+test('shared drawing and erasing persist without changing the source or other scenes', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  const secret = createPrototypeScene(scene.campaignId, roster);
+  const drawing = stroke();
+  const drawn = applyTableCommand(scene, sceneCommand(scene, 'draw', { drawing }), playerB, roster);
+  assert.deepEqual(drawn.drawings, [drawing]);
+  assert.deepEqual(scene.drawings, []);
+  assert.deepEqual(secret.drawings, []);
+  const erased = applyTableCommand(drawn, sceneCommand(drawn, 'erase', { drawingId: drawing.id }), playerA, roster);
+  assert.deepEqual(erased.drawings, []);
+  assert.deepEqual(drawn.drawings, [drawing]);
+  expectCommandError(() => applyTableCommand(erased, sceneCommand(erased, 'erase', { drawingId: drawing.id }), master, roster), 'missing');
+  expectCommandError(() => applyTableCommand(scene, sceneCommand(scene, 'draw', { sceneId: secret.id, drawing }), playerA, roster), 'forbidden');
+});
+
+test('drawing validation bounds finite paired points, brush width, stroke count and duplicate ids', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  for (const changes of [{ points: [0, 0, 1601, 0] }, { points: [0, 0, 1, 1121] }, { points: [0, NaN, 1, 1] },
+    { points: [0, 0, 1] }, { points: [0, 0] }, { points: Array(2050).fill(1) }, { width: 0 }, { width: 41 }]) {
+    assert.equal(commandSchema.safeParse({ id: commandId(), baseRevision: 0, type: 'draw', drawing: { ...stroke(), ...changes } }).success, false);
+  }
+  const drawing = stroke();
+  scene.drawings = [drawing];
+  expectCommandError(() => applyTableCommand(scene, sceneCommand(scene, 'draw', { drawing }), playerA, roster), 'conflict');
+  scene.drawings = Array.from({ length: 300 }, stroke);
+  expectCommandError(() => applyTableCommand(scene, sceneCommand(scene, 'draw', { drawing: stroke() }), master, roster), 'limit');
+});
+
+test('scene-wide drawing budget accepts 40000 coordinates and rejects an extra stroke without mutation', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  const longStroke = count => ({ ...stroke(), points: Array(count).fill(1.2345678901234567) });
+  scene.drawings = [...Array.from({ length: 19 }, () => longStroke(2048)), longStroke(1088)];
+  assert.equal(sceneSchema.safeParse(scene).success, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(scene), 'utf8') < 1_000_000);
+  const original = structuredClone(scene);
+  const drawing = stroke();
+  assert.equal(sceneSchema.safeParse({ ...scene, drawings: [...scene.drawings, drawing] }).success, false);
+  expectCommandError(() => applyTableCommand(scene, sceneCommand(scene, 'draw', { drawing }), playerA, roster), 'limit');
+  assert.deepEqual(scene, original);
+});
+
+test('independent stale draw and erase commands merge without structural revision conflicts', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  const first = stroke(), second = stroke();
+  const firstCommand = sceneCommand(scene, 'draw', { drawing: first });
+  const secondCommand = sceneCommand(scene, 'draw', { drawing: second });
+  const eraseFirst = sceneCommand(scene, 'erase', { drawingId: first.id });
+  const drawn = applyTableCommand(scene, firstCommand, playerA, roster);
+  const both = applyTableCommand(drawn, secondCommand, playerB, roster);
+  assert.deepEqual(both.drawings, [first, second]);
+  assert.deepEqual(drawn.drawings, [first]);
+  expectCommandError(() => applyTableCommand(both, secondCommand, playerA, roster), 'conflict');
+  const erased = applyTableCommand(both, eraseFirst, playerB, roster);
+  assert.deepEqual(erased.drawings, [second]);
+  expectCommandError(() => applyTableCommand(erased, eraseFirst, playerA, roster), 'missing');
+  const staleGroup = sceneCommand(scene, 'group', { tokenIds: scene.tokens.slice(0, 2).map(token => token.id) });
+  const staleUngroup = sceneCommand(scene, 'ungroup', { tokenIds: [scene.tokens[0].id] });
+  expectCommandError(() => applyTableCommand(erased, staleGroup, playerA, roster), 'conflict');
+  expectCommandError(() => applyTableCommand(erased, staleUngroup, playerA, roster), 'conflict');
+});
+
+test('group merges whole intersecting groups and ungroup clears every linked member atomically', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  const first = applyTableCommand(scene, sceneCommand(scene, 'group', { tokenIds: scene.tokens.slice(0, 2).map(t => t.id) }), playerA, roster);
+  const second = applyTableCommand(first, sceneCommand(first, 'group', { tokenIds: first.tokens.slice(2, 4).map(t => t.id) }), playerB, roster);
+  const merge = sceneCommand(second, 'group', { tokenIds: [second.tokens[0].id, second.tokens[2].id] });
+  const merged = applyTableCommand(second, merge, playerB, roster);
+  assert.deepEqual(merged.tokens.slice(0, 4).map(t => t.groupId), Array(4).fill(merge.id));
+  assert.deepEqual(merged.tokens.slice(0, 4).map(t => t.version), [2, 2, 2, 2]);
+  const ungrouped = applyTableCommand(merged, sceneCommand(merged, 'ungroup', { tokenIds: [merged.tokens[1].id] }), playerA, roster);
+  assert.ok(ungrouped.tokens.slice(0, 4).every(t => t.groupId === undefined && t.version === 3));
+  assert.ok(merged.tokens.slice(0, 4).every(t => t.groupId === merge.id));
+  expectCommandError(() => applyTableCommand(merged, { ...merge, baseRevision: merged.revision - 1 }, master, roster), 'conflict');
+  expectCommandError(() => applyTableCommand(merged, sceneCommand(merged, 'ungroup', { tokenIds: [commandId()] }), master, roster), 'missing');
+});
+
+test('group movement uses one rigid clamped delta and invalidates every linked version', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  const grouped = applyTableCommand(scene, sceneCommand(scene, 'group', { tokenIds: scene.tokens.slice(0, 2).map(t => t.id) }), playerA, roster);
+  const moved = applyTableCommand(grouped, moveCommand(grouped, grouped.tokens[1], { x: -500, y: 5000 }), playerB, roster);
+  assert.deepEqual(moved.tokens.slice(0, 2).map(t => [t.x, t.y, t.version]), [[40, 1080, 2], [120, 1080, 2]]);
+  assert.deepEqual(grouped.tokens.slice(0, 2).map(t => [t.x, t.y, t.version]), [[120, 120, 1], [200, 120, 1]]);
+  expectCommandError(() => applyTableCommand(moved, moveCommand(moved, moved.tokens[0], { expectedVersion: 1 }), playerA, roster), 'conflict');
+});
+
+test('remove-many validates every expected version before atomically deleting a selection', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  const tokens = scene.tokens.slice(0, 3).map(t => ({ tokenId: t.id, expectedVersion: t.version }));
+  const command = sceneCommand(scene, 'remove-many', { tokens });
+  expectCommandError(() => applyTableCommand(scene, { ...command, tokens: [tokens[0], { ...tokens[1], expectedVersion: 1 }] }, playerA, roster), 'conflict');
+  expectCommandError(() => applyTableCommand(scene, { ...command, tokens: [tokens[0], { tokenId: commandId(), expectedVersion: 0 }] }, playerA, roster), 'missing');
+  const removed = applyTableCommand(scene, command, playerB, roster);
+  assert.deepEqual(removed.tokens, scene.tokens.slice(3));
+  assert.equal(scene.tokens.length, 8);
+  expectCommandError(() => applyTableCommand(removed, { ...command, baseRevision: removed.revision }, playerA, roster), 'missing');
+  assert.equal(commandSchema.safeParse({ ...command, tokens: [tokens[0], tokens[0]] }).success, false);
+});
+
+test('drawing, grouping and batch removal reject an unauthorized role', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  const outsider = { userId: outsiderId, name: 'Outsider', role: 'spectator' };
+  for (const command of [sceneCommand(scene, 'draw', { drawing: stroke() }), sceneCommand(scene, 'erase', { drawingId: commandId() }),
+    sceneCommand(scene, 'group', { tokenIds: scene.tokens.slice(0, 2).map(t => t.id) }),
+    sceneCommand(scene, 'ungroup', { tokenIds: [scene.tokens[0].id] }),
+    sceneCommand(scene, 'remove-many', { tokens: [{ tokenId: scene.tokens[0].id, expectedVersion: 0 }] })]) {
+    expectCommandError(() => applyTableCommand(scene, command, outsider, roster), 'forbidden');
+  }
 });

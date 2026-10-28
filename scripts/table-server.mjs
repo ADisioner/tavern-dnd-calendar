@@ -5,9 +5,9 @@ import { createServer } from 'node:http';
 import { createTableLibrary } from './table-library.mjs';
 import { MAX_ASSET_BYTES } from '../lib/table/assets.ts';
 import { verifyTableTicket } from '../lib/table/ticket.ts';
-import { CommandError } from '../lib/table/scene.ts';
+import { CommandError, linkedTokens, boundedGroupPoint } from '../lib/table/scene.ts';
 import { roomCommandSchema, roomDataSchema, createRoom, migrateLegacyRoom, roomView, applyRoomCommand } from '../lib/table/room.ts';
-import { motionMessageSchema, boundedPoint, MOTION_LEASE_MS } from '../lib/table/motion.ts';
+import { motionMessageSchema, affectedMotionTokens, MOTION_LEASE_MS, MAX_TABLE_MESSAGE_BYTES } from '../lib/table/motion.ts';
 
 const isLoopbackOrigin = value => {
   try { const url = new URL(value); return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) && url.origin === value; }
@@ -57,7 +57,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
       response.end(JSON.stringify({ error: error instanceof CommandError ? error.message : 'Не удалось выполнить действие с библиотекой.' }));
     }
   });
-  const wss = new WebSocketServer({ server: http, maxPayload: 16384,
+  const wss = new WebSocketServer({ server: http, maxPayload: MAX_TABLE_MESSAGE_BYTES,
     verifyClient: info => isLoopbackOrigin(info.origin) && wss.clients.size < 64 });
   const send = (socket, value) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value)); };
   async function access(ticket) {
@@ -180,7 +180,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     const token = scene.tokens.find(token => token.id === message.tokenId);
     if (!token || token.version !== motion.expectedVersion) { cancelMotion(room, motion); return; }
     motion.seq = message.seq; motion.expires = Date.now() + MOTION_LEASE_MS;
-    const point = boundedPoint(token, scene.gridSize, message);
+    const point = boundedGroupPoint(scene, token, message);
     if (Date.now() - motion.sentAt < 40) return;
     motion.sentAt = Date.now();
     motionBroadcast(room, motion, { type: 'motion-frame', motionId: motion.motionId, sceneId: motion.sceneId, tokenId: motion.tokenId, seq: motion.seq, userId: peer.actor.userId, name: peer.actor.name, ...point });
@@ -190,6 +190,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     if (message.type === 'motion-start') {
       const scene = authorizedMotionScene(room, peer, message.sceneId), token = scene.tokens.find(token => token.id === message.tokenId);
       if (!token) throw new CommandError('missing', 'Токен больше не существует.');
+      if (linkedTokens(scene, token)[0].id !== token.id) throw new CommandError('busy', 'Двигайте группу через её основной токен.');
       if (existing && existing.expires > Date.now() && (existing.socket !== socket || existing.motionId !== message.motionId)) throw new CommandError('busy', 'Этот токен сейчас двигает другой участник.');
       if (token.version !== message.expectedVersion) throw new CommandError('conflict', 'Положение токена изменилось. Повторите движение.');
       if (existing?.socket === socket && existing.motionId === message.motionId) return;
@@ -215,7 +216,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     room.data = result.data; room.receipts = receipts; room.motions.delete(key);
     const savedScene = room.data.scenes.find(entry => entry.scene.id === scene.id).scene;
     motionBroadcast(room, existing, { type: 'motion-committed', motionId: message.motionId, sceneId: scene.id, tokenId: message.tokenId,
-      token: savedScene.tokens.find(token => token.id === message.tokenId), sceneRevision: savedScene.revision, updatedAt: savedScene.updatedAt });
+      token: savedScene.tokens.find(token => token.id === message.tokenId), tokens: linkedTokens(savedScene, savedScene.tokens.find(token => token.id === message.tokenId)), sceneRevision: savedScene.revision, updatedAt: savedScene.updatedAt });
   }
   wss.on('connection', (socket, request) => {
     const origin = request.headers.origin;
@@ -254,7 +255,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
                 // Show the exact drop/keyboard destination immediately, while its durable write waits.
                 existing.ending = true; existing.expires = Date.now() + 10000;
                 motionBroadcast(room, existing, { type: 'motion-frame', motionId: existing.motionId, sceneId: existing.sceneId, tokenId: existing.tokenId,
-                  seq: motionMessage.seq, userId: peer.actor.userId, name: peer.actor.name, ...boundedPoint(token, scene.gridSize, motionMessage) });
+                  seq: motionMessage.seq, userId: peer.actor.userId, name: peer.actor.name, ...boundedGroupPoint(scene, token, motionMessage) });
               }
             }
           }
@@ -268,7 +269,11 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
           // Recheck after waiting for other commands: logout/removal must revoke writes.
           const actor = await refresh(socket); if (!actor) return;
           if (room.receipts.some(r => r.id === command.id && r.userId === actor.actor.userId)) { await snapshot(socket, room, command.id); return; }
-          if ((command.type === 'move' || command.type === 'update') && room.motions.has(command.sceneId + ':' + command.tokenId)) throw new CommandError('busy', 'Дождитесь окончания движения этого токена.');
+          const commandScene = room.data.scenes.find(entry => entry.scene.id === command.sceneId)?.scene;
+          if (commandScene && affectedMotionTokens(commandScene, command).some(token => {
+            const lease = room.motions.get(command.sceneId + ':' + token.id);
+            return lease && (lease.ending || lease.expires > Date.now());
+          })) throw new CommandError('busy', 'Дождитесь окончания движения этой группы.');
           if ((command.type === 'add' || command.type === 'map') && command.assetId) await library.image(command.assetId, actor);
           const result = applyRoomCommand(room.data, command, actor.actor, actor.roster);
           if (command.type === 'scene-view') { actor.previewSceneId = result.viewSceneId; invalidateMotions(room); await snapshot(socket, room, command.id); return; }

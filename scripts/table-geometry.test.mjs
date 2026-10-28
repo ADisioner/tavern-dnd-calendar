@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as sceneTools from '../lib/table/scene.ts';
+import { tokensInRect } from '../lib/table/selection.ts';
 import {
   screenToWorld,
   worldToScreen,
@@ -60,5 +62,29 @@ test('fitCamera centers the map and keeps its bounds inside viewport padding', (
   assert.ok(topLeft.y >= padding - 1e-9);
   assert.ok(bottomRight.x <= viewport.width - padding + 1e-9);
   assert.ok(bottomRight.y <= viewport.height - padding + 1e-9);
+});
+
+test('rectangle selection uses world coordinates, reversed corners and circle intersection', () => {
+  const scene = sceneTools.createPrototypeScene(crypto.randomUUID(), []);
+  scene.tokens = scene.tokens.slice(0, 2);
+  assert.deepEqual(tokensInRect(scene, { x: 90, y: 90 }, { x: 70, y: 70 }), []);
+  assert.deepEqual(tokensInRect(scene, { x: 120, y: 120 }, { x: 80, y: 80 }), [scene.tokens[0].id]);
+  assert.deepEqual(tokensInRect(scene, { x: 240, y: 160 }, { x: 80, y: 80 }), scene.tokens.map(t => t.id));
+  assert.deepEqual(tokensInRect(scene, { x: 160, y: 120 }, { x: 160, y: 120 }), scene.tokens.map(t => t.id));
+});
+
+test('linked tokens sort canonical ids and group bounds account for each token radius', () => {
+  assert.equal(typeof sceneTools.linkedTokens, 'function');
+  assert.equal(typeof sceneTools.boundedGroupPoint, 'function');
+  const scene = sceneTools.createPrototypeScene(crypto.randomUUID(), []);
+  scene.tokens = scene.tokens.slice(0, 3);
+  scene.tokens[0].id = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  scene.tokens[1].id = '11111111-1111-4111-8111-111111111111';
+  scene.tokens[0].groupId = scene.tokens[1].groupId = crypto.randomUUID();
+  scene.tokens[1].size = 2;
+  assert.deepEqual(sceneTools.linkedTokens(scene, scene.tokens[0]), [scene.tokens[1], scene.tokens[0]]);
+  assert.deepEqual(sceneTools.linkedTokens(scene, scene.tokens[2]), [scene.tokens[2]]);
+  assert.deepEqual(sceneTools.boundedGroupPoint(scene, scene.tokens[0], { x: 5000, y: 5000 }), { x: 1440, y: 1040 });
+  assert.deepEqual(sceneTools.boundedGroupPoint(scene, scene.tokens[1], { x: -500, y: -500 }), { x: 120, y: 80 });
 });
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { WebSocket } from 'ws';
 import { startTableServer } from './table-server.mjs';
 import { issueTableTicket } from '../lib/table/ticket.ts';
-import { MotionStore, motionMessageSchema } from '../lib/table/motion.ts';
+import { MotionStore, motionMessageSchema, MAX_TABLE_MESSAGE_BYTES } from '../lib/table/motion.ts';
 
 const origin = 'http://127.0.0.1:5173';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -88,6 +88,10 @@ test('leases reject competing grabs, stale sequences and legacy writes while all
   const run = await setup(), [gm, player] = run.clients;
   try {
     const first = motion(player); player.send({ type: 'motion-start', ...first }); await gm.wait(value => value.type === 'motion-started');
+    const removeId = crypto.randomUUID();
+    gm.send({ type: 'command', command: { id: removeId, type: 'remove', sceneId: first.sceneId, tokenId: first.tokenId,
+      expectedVersion: first.expectedVersion, baseRevision: gm.initial.scene.revision } });
+    assert.equal((await gm.wait(value => value.type === 'error' && value.commandId === removeId)).code, 'busy');
     const rival = motion(gm); gm.send({ type: 'motion-start', ...rival });
     assert.equal((await gm.wait(value => value.type === 'motion-rejected')).code, 'busy'); await gm.wait(value => value.type === 'snapshot');
     const second = motion(gm, gm.initial.scene.tokens[1]); gm.send({ type: 'motion-start', ...second }); await gm.wait(value => value.type === 'motion-started' && value.motionId === second.motionId);
@@ -98,6 +102,29 @@ test('leases reject competing grabs, stale sequences and legacy writes while all
     assert.equal((await gm.wait(value => value.type === 'motion-committed')).token.x, 600);
     player.send({ ...frame(first, 6, 520, 360), type: 'motion-end' });
     assert.equal((await player.wait(value => value.type === 'motion-committed' && value.motionId === first.motionId)).token.x, 520);
+  } finally { await run.close(); }
+});
+
+test('player edits and removes another participant token; peers converge and deletion persists', async () => {
+  const run = await setup(), [gm, player] = run.clients;
+  try {
+    const token = gm.initial.scene.tokens[0], scene = gm.initial.scene;
+    const editId = crypto.randomUUID();
+    player.send({ type: 'command', command: { id: editId, type: 'update', sceneId: scene.id, baseRevision: scene.revision,
+      tokenId: token.id, expectedVersion: token.version, name: 'Edited by player', size: 2, ownerId: token.ownerId } });
+    const edited = await player.wait(value => value.type === 'snapshot' && value.commandId === editId);
+    assert.equal(edited.scene.tokens.find(value => value.id === token.id).name, 'Edited by player');
+    const id = crypto.randomUUID(), command = { id, type: 'remove', sceneId: scene.id, baseRevision: edited.scene.revision,
+      tokenId: token.id, expectedVersion: token.version + 1 };
+    player.send({ type: 'command', command });
+    const removed = await gm.wait(value => value.type === 'snapshot' && value.commandId === id);
+    assert.equal(removed.scene.tokens.some(value => value.id === token.id), false);
+    await player.wait(value => value.type === 'snapshot' && value.commandId === id);
+    player.send({ type: 'command', command });
+    const repeated = await player.wait(value => value.type === 'snapshot' && value.commandId === id);
+    assert.equal(repeated.scene.revision, removed.scene.revision);
+    const saved = JSON.parse(await fs.readFile(path.join(run.stateDirectory, run.campaignId + '.room.json'), 'utf8'));
+    assert.equal(saved.data.scenes[0].scene.tokens.some(value => value.id === token.id), false);
   } finally { await run.close(); }
 });
 test('disconnect cancels unsaved motion and releases the token; permission revocation prevents final writes', async () => {
@@ -145,5 +172,82 @@ test('private preparation motions never appear in player messages', async () => 
     gm.send({ ...frame(identity, 2, 640, 640), type: 'motion-end' }); await gm.wait(value => value.type === 'motion-committed');
     assert.ok(!player.messages.some(value => value.type.startsWith('motion-')));
     assert.ok(!JSON.stringify(player.messages).includes('Secret room'));
+  } finally { await run.close(); }
+});
+
+test('group lease rejects a second member and commits every member with stable offsets', async () => {
+  const run = await setup(), [gm, player] = run.clients;
+  try {
+    const scene = gm.initial.scene, ids = scene.tokens.slice(0, 2).map(token => token.id);
+    const groupId = crypto.randomUUID();
+    gm.send({ type: 'command', command: { type: 'group', id: groupId, sceneId: scene.id, baseRevision: scene.revision, tokenIds: ids } });
+    const grouped = (await gm.wait(value => value.type === 'snapshot' && value.commandId === groupId)).scene;
+    await player.wait(value => value.type === 'snapshot' && value.commandId === groupId);
+    const members = grouped.tokens.filter(token => ids.includes(token.id)).sort((a, b) => a.id.localeCompare(b.id));
+    const identity = motion(player, members[0]);
+    player.send({ type: 'motion-start', ...identity }); await gm.wait(value => value.type === 'motion-started');
+    gm.send({ type: 'motion-start', ...motion(gm, members[1]) });
+    assert.equal((await gm.wait(value => value.type === 'motion-rejected')).code, 'busy');
+    for (const command of [
+      { type: 'ungroup', tokenIds: [members[1].id] },
+      { type: 'group', tokenIds: [members[1].id, grouped.tokens[2].id].filter(Boolean) },
+      { type: 'remove-many', tokens: [{ tokenId: members[1].id, expectedVersion: members[1].version }] },
+      { type: 'update', tokenId: members[1].id, expectedVersion: members[1].version, name: 'Blocked', size: members[1].size, ownerId: members[1].ownerId },
+      { type: 'remove', tokenId: members[1].id, expectedVersion: members[1].version },
+    ]) {
+      const id = crypto.randomUUID(); gm.send({ type: 'command', command: { ...command, id, sceneId: scene.id, baseRevision: grouped.revision } });
+      assert.equal((await gm.wait(value => value.type === 'error' && value.commandId === id)).code, 'busy');
+    }
+    player.send(frame(identity, 1, members[0].x + 100, members[0].y + 80));
+    await gm.wait(value => value.type === 'motion-frame' && value.motionId === identity.motionId);
+    player.send({ ...frame(identity, 2, members[0].x + 100, members[0].y + 80), type: 'motion-end' });
+    const commits = await Promise.all(run.clients.map(client => client.wait(value => value.type === 'motion-committed' && value.motionId === identity.motionId)));
+    assert.deepEqual(commits[0].tokens, commits[1].tokens); assert.equal(commits[0].tokens.length, 2);
+    for (const before of members) {
+      const after = commits[0].tokens.find(token => token.id === before.id);
+      assert.equal(after.x - before.x, 100); assert.equal(after.y - before.y, 80); assert.equal(after.version, before.version + 1);
+    }
+    const saved = JSON.parse(await fs.readFile(path.join(run.stateDirectory, run.campaignId + '.room.json'), 'utf8')).data.scenes[0].scene;
+    for (const token of commits[0].tokens) assert.deepEqual(saved.tokens.find(value => value.id === token.id), token);
+  } finally { await run.close(); }
+});
+
+
+test('group preview tracks preserve offsets and cancel together without clearing a newer gesture', async () => {
+  const { createPrototypeScene } = await import('../lib/table/scene.ts');
+  const scene = createPrototypeScene(crypto.randomUUID(), []), [a, b] = scene.tokens;
+  a.groupId = b.groupId = crypto.randomUUID();
+  const store = new MotionStore();
+  store.updateGroup(scene, a, 'first', { x: a.x + 200, y: a.y + 100 }, { duration: 100, now: 0 });
+  assert.deepEqual(store.position(b.id, b, 50), { x: b.x + 100, y: b.y + 50 });
+  store.updateGroup(scene, a, 'next', { x: a.x + 300, y: a.y + 150 }, { local: true, now: 50 });
+  store.cancelMotion('first');
+  assert.deepEqual(store.target(b), { x: b.x + 300, y: b.y + 150 });
+  store.cancelMotion('next'); assert.equal(store.tracks.size, 0);
+});
+
+test('maximum valid floating-point brush stroke crosses the WebSocket transport and persists', async () => {
+  const run = await setup(), [gm, player] = run.clients;
+  try {
+    const drawing = { id: crypto.randomUUID(), color: '#a8bc8a', width: 5,
+      points: Array.from({ length: 2048 }, (_, i) => i % 2 ? 234.12345678901235 : 456.9876543210987) };
+    const command = { type: 'draw', id: crypto.randomUUID(), sceneId: gm.initial.scene.id, baseRevision: 0, drawing };
+    const message = { type: 'command', command };
+    assert.ok(Buffer.byteLength(JSON.stringify(message)) > 24000);
+    player.send(message);
+    const snapshots = await Promise.all(run.clients.map(client => client.wait(value => value.type === 'snapshot' && value.commandId === command.id)));
+    assert.deepEqual(snapshots[0].scene.drawings, [drawing]); assert.deepEqual(snapshots[1].scene.drawings, [drawing]);
+    const saved = JSON.parse(await fs.readFile(path.join(run.stateDirectory, run.campaignId + '.room.json'), 'utf8'));
+    assert.deepEqual(saved.data.scenes[0].scene.drawings, [drawing]);
+  } finally { await run.close(); }
+});
+
+
+test('WebSocket closes oversized UTF-8 messages with 1009 instead of hanging a pending command', async () => {
+  const run = await setup(), [, player] = run.clients;
+  try {
+    const closed = new Promise(resolve => player.socket.once('close', code => resolve(code)));
+    player.send({ type: 'command', padding: 'я'.repeat(MAX_TABLE_MESSAGE_BYTES / 2) });
+    assert.equal(await closed, 1009);
   } finally { await run.close(); }
 });

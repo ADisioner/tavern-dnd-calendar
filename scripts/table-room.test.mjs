@@ -38,6 +38,15 @@ test('players cannot manage or preview scenes even when they know an inactive sc
   fails(() => apply(data, 'scene-create', { name: 'Hacked' }, player), 'forbidden');
   fails(() => apply(data, 'add', { sceneId: targetSceneId, baseRevision: 0, ownerId: player.userId }, player), 'forbidden');
 });
+
+test('token removal cannot cross into a master preparation scene', () => {
+  const original = createRoom(campaign, roster);
+  const result = apply(original, 'scene-duplicate', { targetSceneId: original.activeSceneId, name: 'Private preparation' });
+  const secret = result.data.scenes.find(entry => entry.scene.id === result.viewSceneId).scene;
+  const token = secret.tokens[0];
+  fails(() => apply(result.data, 'remove', { sceneId: secret.id, baseRevision: secret.revision,
+    tokenId: token.id, expectedVersion: token.version }, player), 'forbidden');
+});
 test('duplicate scenes have independent token IDs, while preserving map, grid, owners and positions', () => {
   let original = createRoom(campaign, roster);
   original.scenes[0].scene.mapAssetId = crypto.randomUUID();
