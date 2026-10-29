@@ -80,6 +80,7 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
   const motion = motionMessageSchema.parse(raw), room = await readHostedRoom(env, actor), scene = allowedScene(room.state.data, actor, motion.sceneId);
   const token = scene.tokens.find(value => value.id === motion.tokenId); if (!token) throw new CommandError('missing', 'Токен не найден.');
   if (motion.type === 'motion-start') {
+    if (linkedTokens(scene, token).some(member => member.locked)) throw new CommandError('locked', 'Движение этой фигуры или её группы заблокировано.');
     if (linkedTokens(scene, token)[0].id !== token.id) throw new CommandError('busy', 'Двигайте группу через её основной токен.');
     if (token.version !== motion.expectedVersion) throw new CommandError('conflict', 'Положение токена уже изменилось.');
     const prior = await db.prepare('SELECT * FROM test_table_motions WHERE campaign_id=? AND scene_id=? AND token_id=?').bind(client.campaignId, motion.sceneId, motion.tokenId).first<MotionRow>();

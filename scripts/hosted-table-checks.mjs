@@ -110,6 +110,24 @@ export async function hostedChecks(base, clients, campaign) {
     const added = await send(1, clientId, { type: 'command', command: { type: 'add', id: crypto.randomUUID(), sceneId: current.scene.id,
       baseRevision: current.scene.revision, ownerId: clients[1].id, assetId: asset.id, name: 'Private placed token' } });
     assert.equal(added.body.events[0].type, 'snapshot', JSON.stringify(added.body));
+    const placedScene = added.body.events[0].scene, placedToken = placedScene.tokens.at(-1);
+    const copied = await send(0, viewerId, { type: 'command', command: { type: 'duplicate', id: crypto.randomUUID(),
+      sceneId: placedScene.id, baseRevision: placedScene.revision, tokenId: placedToken.id, expectedVersion: placedToken.version } });
+    assert.equal(copied.body.events[0].type, 'snapshot', JSON.stringify(copied.body));
+    const copiedScene = copied.body.events[0].scene, copy = copiedScene.tokens.at(-1);
+    assert.notEqual(copy.id, placedToken.id); assert.equal(copy.assetId, placedToken.assetId);
+    const styled = await send(1, clientId, { type: 'command', command: { type: 'update', id: crypto.randomUUID(),
+      sceneId: copiedScene.id, baseRevision: copiedScene.revision, tokenId: copy.id, expectedVersion: copy.version,
+      name: 'Menu label', size: 1.5, ownerId: copy.ownerId, rotation: 45, layer: 3, locked: true, showLabel: false,
+      statuses: ['poisoned', 'exhaustion'], exhaustionLevel: 3 } });
+    const styledToken = styled.body.events[0].scene.tokens.find(value => value.id === copy.id);
+    assert.equal(styledToken.rotation, 45); assert.equal(styledToken.layer, 3); assert.equal(styledToken.showLabel, false);
+    assert.deepEqual(styledToken.statuses, ['poisoned', 'exhaustion']); assert.equal(styledToken.exhaustionLevel, 3);
+    const sharedStatus = (await poll(0, viewerId)).body.events.find(event => event.type === 'snapshot').scene.tokens.find(value => value.id === copy.id);
+    assert.deepEqual(sharedStatus.statuses, ['poisoned', 'exhaustion']); assert.equal(sharedStatus.exhaustionLevel, 3);
+    const locked = await send(0, viewerId, { type: 'motion-start', motionId: crypto.randomUUID(), sceneId: copiedScene.id,
+      tokenId: copy.id, expectedVersion: styledToken.version });
+    assert.equal(locked.body.events[0].type, 'motion-rejected'); assert.equal(locked.body.events[0].code, 'locked');
     const file = await fetch(base + library + '&asset=' + asset.id, { headers: { Cookie: clients[0].cookie } });
     assert.equal(file.status, 200); assert.deepEqual(new Uint8Array(await file.arrayBuffer()), png);
     assert.equal((await request(2, library + '&asset=' + asset.id)).status, 403);

@@ -190,6 +190,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     if (message.type === 'motion-start') {
       const scene = authorizedMotionScene(room, peer, message.sceneId), token = scene.tokens.find(token => token.id === message.tokenId);
       if (!token) throw new CommandError('missing', 'Токен больше не существует.');
+      if (linkedTokens(scene, token).some(member => member.locked)) throw new CommandError('locked', 'Движение этой фигуры или её группы заблокировано.');
       if (linkedTokens(scene, token)[0].id !== token.id) throw new CommandError('busy', 'Двигайте группу через её основной токен.');
       if (existing && existing.expires > Date.now() && (existing.socket !== socket || existing.motionId !== message.motionId)) throw new CommandError('busy', 'Этот токен сейчас двигает другой участник.');
       if (token.version !== message.expectedVersion) throw new CommandError('conflict', 'Положение токена изменилось. Повторите движение.');

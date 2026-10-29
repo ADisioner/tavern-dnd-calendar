@@ -23,7 +23,7 @@ export function boundedPoint(token: TableToken, gridSize: number, point: MotionP
 export function affectedMotionTokens(scene: TableScene, command: { type: string; tokenId?: string; tokenIds?: string[]; tokens?: { tokenId: string }[] }): TableToken[] {
   const ids = command.type === 'group' || command.type === 'ungroup' ? command.tokenIds ?? []
     : command.type === 'remove-many' ? command.tokens?.map(value => value.tokenId) ?? []
-    : ['move', 'update', 'remove'].includes(command.type) && command.tokenId ? [command.tokenId] : [];
+    : ['move', 'update', 'remove', 'duplicate'].includes(command.type) && command.tokenId ? [command.tokenId] : [];
   return [...new Map(ids.flatMap(id => { const token = scene.tokens.find(value => value.id === id); return token ? linkedTokens(scene, token) : []; }).map(token => [token.id, token])).values()];
 }
 // This store is sampled directly by Konva's animation loop: no React tree update per frame.

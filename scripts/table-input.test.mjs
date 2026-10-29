@@ -6,6 +6,7 @@ import ts from 'typescript';
 import * as geometry from '../lib/table/geometry.ts';
 import * as selection from '../lib/table/selection.ts';
 import * as sceneModule from '../lib/table/scene.ts';
+import * as conditions from '../lib/table/conditions.ts';
 
 // Render the actual canvas handlers without a browser or GPU.
 function canvas(tool = 'select', options = {}) {
@@ -27,6 +28,7 @@ function canvas(tool = 'select', options = {}) {
     if (name === 'react-konva') return Object.fromEntries(['Stage','Layer','Image','Line','Rect','Group','Circle','Text'].map(key => [key, key]));
     if (name.includes('/geometry')) return geometry;
     if (name.includes('/selection')) return selection;
+    if (name.includes('/conditions')) return conditions;
     if (name.includes('/scene')) return { ...sceneModule, canMoveToken: () => true };
     if (name.includes('/motion')) return { boundedPoint: (_token, _grid, point) => point };
     return {};
@@ -227,4 +229,37 @@ test('dragging a grouped token clamps its displayed position before previewing t
   assert.equal(displayed.x, 1460); assert.equal(displayed.y, 230);
   const preview = view.previews.find(entry => entry[0] === 'move')[1];
   assert.equal(preview.x, 1460); assert.equal(preview.y, 230);
+});
+test('locked tokens and groups containing a locked token cannot begin mouse motion', () => {
+  const view = canvas('select', { scene: { tokens: [
+    { id: 'one', x: 80, y: 80, size: 1, name: 'Hero', groupId: 'pair' },
+    { id: 'two', x: 180, y: 80, size: 1, name: 'Other', groupId: 'pair', locked: true },
+  ] } });
+  assert.equal(view.group.props.draggable, false);
+  let stopped = false;
+  view.group.props.onDragStart({ evt: {}, target: { stopDrag() { stopped = true; } } });
+  assert.equal(stopped, true); assert.deepEqual(view.previews, []);
+});
+test('token layers determine draw order even when the lower token is selected', () => {
+  const view = canvas('select', { selectedId: 'one', scene: { tokens: [
+    { id: 'one', x: 80, y: 80, size: 1, name: 'Hero', layer: -1, showLabel: false, rotation: 45 },
+    { id: 'two', x: 180, y: 80, size: 1, name: 'Other', layer: 1 },
+  ] } });
+  const groups = view.nodes(view.stage).filter(node => node.type === 'Group' && node.props.id);
+  assert.deepEqual(groups.map(node => node.props.id), ['one', 'two']);
+  assert.equal(view.nodes(view.group).some(node => node.type === 'Text' && node.props.text === 'Hero'), false);
+  assert.ok(view.nodes(view.group).some(node => node.type === 'Group' && node.props.rotation === 45));
+});
+test('condition badges remain upright and show four conditions plus overflow with accessible full names', () => {
+  const view = canvas('select', { scene: { tokens: [{ id: 'one', x: 80, y: 80, size: 1, name: 'Hero', rotation: 90, statuses: ['blinded', 'charmed', 'deafened', 'poisoned', 'prone'], showLabel: false }] } });
+  const badges = view.nodes(view.group).find(node => node.props?.name === 'condition-badges');
+  assert.ok(badges); assert.equal(badges.props.rotation ?? 0, 0);
+  const text = view.nodes(badges).filter(node => node.type === 'Text').map(node => node.props.text);
+  assert.equal(text.length, 5); assert.equal(text.at(-1), '+1');
+  assert.ok(view.nodes(view.tree).some(node => node.props?.['aria-label'] === 'Состояния фигур'));
+});
+test('native menu scrolling is available while canvas touch gestures remain isolated', () => {
+  const view = canvas();
+  assert.notEqual(view.tree.props.style.touchAction, 'none');
+  assert.equal(view.stage.props.style?.touchAction, 'none');
 });

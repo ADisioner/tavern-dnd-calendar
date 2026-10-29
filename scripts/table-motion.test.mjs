@@ -251,3 +251,21 @@ test('WebSocket closes oversized UTF-8 messages with 1009 instead of hanging a p
     assert.equal(await closed, 1009);
   } finally { await run.close(); }
 });
+
+test('server refuses locked token motion and permits an unlocked independent copy', async () => {
+  const run = await setup(), [gm, player] = run.clients;
+  try {
+    const scene = gm.initial.scene, token = scene.tokens[0], updateId = crypto.randomUUID();
+    gm.send({ type: 'command', command: { type: 'update', id: updateId, sceneId: scene.id, baseRevision: scene.revision,
+      tokenId: token.id, expectedVersion: token.version, name: token.name, size: token.size, ownerId: token.ownerId, locked: true } });
+    const locked = (await player.wait(value => value.type === 'snapshot' && value.commandId === updateId)).scene;
+    const identity = motion(player, locked.tokens.find(value => value.id === token.id));
+    player.send({ type: 'motion-start', ...identity });
+    assert.equal((await player.wait(value => value.type === 'motion-rejected' && value.motionId === identity.motionId)).code, 'locked');
+    const id = crypto.randomUUID();
+    player.send({ type: 'command', command: { type: 'duplicate', id, sceneId: scene.id, baseRevision: locked.revision,
+      tokenId: token.id, expectedVersion: token.version + 1 } });
+    const copied = (await player.wait(value => value.type === 'snapshot' && value.commandId === id)).scene.tokens.find(value => value.id === id);
+    assert.equal(copied.locked, false); assert.equal(copied.version, 0);
+  } finally { await run.close(); }
+});

@@ -206,6 +206,68 @@ test('existing scene saves remain compatible; map changes preserve existing toke
 const sceneCommand = (scene, type, fields = {}) => commandSchema.parse({ id: commandId(), baseRevision: scene.revision, type, ...fields });
 const stroke = () => ({ id: commandId(), color: '#a8bc8a', width: 4, points: [10, 20, 40, 60] });
 
+test('token menu properties persist and normal update preserves them', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster), token = scene.tokens[0];
+  const command = sceneCommand(scene, 'update', { tokenId: token.id, expectedVersion: 0, name: token.name, size: token.size, ownerId: token.ownerId,
+    locked: true, rotation: 315, layer: -5, showLabel: false });
+  const updated = applyTableCommand(scene, command, playerB, roster);
+  const normal = applyTableCommand(updated, sceneCommand(updated, 'update', { tokenId: token.id, expectedVersion: 1, name: 'Renamed', size: 2, ownerId: token.ownerId }), playerA, roster);
+  assert.deepEqual([normal.tokens[0].locked, normal.tokens[0].rotation, normal.tokens[0].layer, normal.tokens[0].showLabel], [true, 315, -5, false]);
+  assert.equal(sceneSchema.parse(JSON.parse(JSON.stringify(normal))).tokens[0].rotation, 315);
+  for (const invalid of [{ rotation: 360 }, { rotation: -1 }, { layer: 10001 }, { layer: 0.5 }, { locked: 'yes' }, { showLabel: 0 }]) {
+    assert.equal(commandSchema.safeParse({ ...command, ...invalid }).success, false);
+  }
+});
+
+test('multiple D&D statuses and exhaustion persist through edits and copying, invalid statuses fail', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster), token = scene.tokens[0];
+  const command = sceneCommand(scene, 'update', { tokenId: token.id, expectedVersion: token.version,
+    name: token.name, size: token.size, ownerId: token.ownerId, statuses: ['poisoned', 'exhaustion'], exhaustionLevel: 3 });
+  const styled = applyTableCommand(scene, command, playerA, roster);
+  assert.deepEqual(styled.tokens[0].statuses, ['poisoned', 'exhaustion']);
+  assert.equal(styled.tokens[0].exhaustionLevel, 3);
+  const normal = applyTableCommand(styled, sceneCommand(styled, 'update', { tokenId: token.id, expectedVersion: 1,
+    name: 'Renamed', size: 2, ownerId: token.ownerId }), playerB, roster);
+  const copy = applyTableCommand(normal, sceneCommand(normal, 'duplicate', { tokenId: token.id, expectedVersion: 2 }), playerA, roster).tokens.at(-1);
+  assert.deepEqual(copy.statuses, ['poisoned', 'exhaustion']); assert.equal(copy.exhaustionLevel, 3);
+  assert.deepEqual(sceneSchema.parse(JSON.parse(JSON.stringify(normal))).tokens[0].statuses, ['poisoned', 'exhaustion']);
+  for (const invalid of [{ statuses: ['unknown'] }, { statuses: ['poisoned', 'poisoned'] }, { exhaustionLevel: 0 }, { exhaustionLevel: 7 }, { exhaustionLevel: 1.5 }]) {
+    assert.equal(commandSchema.safeParse({ ...command, ...invalid }).success, false);
+  }
+  const cleared = applyTableCommand(normal, sceneCommand(normal, 'update', { tokenId: token.id, expectedVersion: 2,
+    name: token.name, size: token.size, ownerId: token.ownerId, statuses: [] }), playerA, roster);
+  assert.deepEqual(cleared.tokens[0].statuses, []);
+});
+
+test('locked group member blocks movement but participants can unlock, edit and remove', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  scene.tokens[0].groupId = scene.tokens[1].groupId = commandId();
+  scene.tokens[1].locked = true;
+  assert.equal(canMoveToken(scene.tokens[1], master), false);
+  expectCommandError(() => applyTableCommand(scene, moveCommand(scene, scene.tokens[0]), master, roster), 'locked');
+  expectCommandError(() => applyTableCommand(scene, moveCommand(scene, scene.tokens[1]), playerA, roster), 'locked');
+  const locked = scene.tokens[1];
+  const unlocked = applyTableCommand(scene, sceneCommand(scene, 'update', { tokenId: locked.id, expectedVersion: 0, name: locked.name, size: locked.size, ownerId: locked.ownerId, locked: false }), playerB, roster);
+  assert.equal(applyTableCommand(unlocked, moveCommand(unlocked, unlocked.tokens[0]), playerA, roster).tokens[0].version, 1);
+  assert.equal(applyTableCommand(scene, sceneCommand(scene, 'remove', { tokenId: locked.id, expectedVersion: 0 }), playerA, roster).tokens.length, 7);
+});
+
+test('duplicate copies placed private image reference and style, detaches group and validates versions, scene, role and cap', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster), source = scene.tokens[0];
+  Object.assign(source, { assetId: commandId(), groupId: commandId(), locked: true, rotation: 135, layer: 7, showLabel: false, x: 1550, y: 1070 });
+  const command = sceneCommand(scene, 'duplicate', { tokenId: source.id, expectedVersion: 0 });
+  const copyScene = applyTableCommand(scene, command, playerB, roster), copy = copyScene.tokens.at(-1);
+  const { groupId, ...ungroupedSource } = source;
+  assert.deepEqual(copy, { ...ungroupedSource, id: command.id, locked: false, version: 0, x: 1560, y: 1080 });
+  assert.equal(scene.tokens.length, 8);
+  expectCommandError(() => applyTableCommand(scene, { ...command, expectedVersion: 1 }, playerA, roster), 'conflict');
+  expectCommandError(() => applyTableCommand(copyScene, command, playerA, roster), 'conflict');
+  expectCommandError(() => applyTableCommand(scene, { ...command, sceneId: commandId() }, playerA, roster), 'forbidden');
+  expectCommandError(() => applyTableCommand(scene, command, { ...playerA, role: 'spectator' }, roster), 'forbidden');
+  scene.tokens = Array.from({ length: 150 }, (_, i) => ({ ...source, id: i ? commandId() : source.id }));
+  expectCommandError(() => applyTableCommand(scene, command, master, roster), 'limit');
+});
+
 test('old scene saves acquire empty drawings and retain optional group ids', () => {
   const scene = createPrototypeScene(crypto.randomUUID(), roster);
   delete scene.drawings;

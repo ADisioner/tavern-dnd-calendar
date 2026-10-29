@@ -3,11 +3,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Stage, Layer, Image as CanvasImage, Line, Rect, Group, Circle, Text } from 'react-konva';
 import type Konva from 'konva';
 import { ZoomIn, ZoomOut, Scan } from 'lucide-react';
-import { fitCamera, zoomAt, snapCenter, screenToWorld, type Camera, type Point } from '@/lib/table/geometry';
-import { boundedGroupPoint, canMoveToken, type TableActor, type TableScene, type TableToken } from '@/lib/table/scene';
+import { fitCamera, zoomAt, snapCenter, screenToWorld, worldToScreen, type Camera, type Point } from '@/lib/table/geometry';
+import { boundedGroupPoint, canMoveToken, linkedTokens, type TableActor, type TableScene, type TableToken } from '@/lib/table/scene';
 import { assetUrl } from '@/lib/table/assets';
 import { type MotionStore } from '@/lib/table/motion';
 import { tokensInRect } from '@/lib/table/selection';
+import TokenContextMenu, { tokenMenuPlacement, type TokenActionHandler } from './token-context-menu';
+import { CONDITIONS } from '@/lib/table/conditions';
 
 type CanvasDrawing = { id: string; color: string; width: number; points: number[] };
 type CanvasGesture = { kind: 'draw'; drawing: CanvasDrawing } | { kind: 'select'; from: Point; to: Point; additive: boolean };
@@ -28,9 +30,10 @@ export type TableCanvasProps = {
   scene: TableScene; actor: TableActor; selectedId: string | null; selectedIds?: string[]; tool: 'select' | 'pan' | 'draw' | 'erase'; snap: boolean;
   pending: boolean; onSelect: (id: string | null, additive?: boolean) => void; onSelectMany?: (ids: string[], additive?: boolean) => void; onMove: (token: TableToken, point: Point) => boolean;
   brushColor?: string; brushWidth?: number; onDraw?: (drawing: CanvasDrawing) => void; onErase?: (drawingId: string) => void;
+  onTokenAction?: TokenActionHandler;
   motionStore: MotionStore; onMotionStart: (token: TableToken) => boolean; onMotionPreview: (token: TableToken, point: Point, duration?: number) => boolean; onMotionEnd: (tokenId: string) => void;
 };
-export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
+export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null), stageRef = useRef<Konva.Stage>(null);
   const [viewport, setViewport] = useState({ width: 800, height: 600 });
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 0.5 });
@@ -41,6 +44,9 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
   const tokenNodes = useRef(new Map<string, Konva.Group>()), dragging = useRef(new Set<string>());
   const gestureRef = useRef<CanvasGesture | null>(null), cameraOverride = useRef(false), pinching = useRef(false);
   const [gesture, setGesture] = useState<CanvasGesture | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const primary = scene.tokens.find(token => token.id === (selectedId ?? selectedIds?.at(-1)));
+  const movable = (token: TableToken) => canMoveToken(token, actor) && !linkedTokens(scene, token).some(member => member.locked);
   const selectedSet = new Set(selectedIds ?? (selectedId ? [selectedId] : []));
   const cancelGesture = () => { gestureRef.current = null; setGesture(null); };
   const finishTokenDrags = (event?: MouseEvent) => { for (const id of dragging.current) tokenNodes.current.get(id)?.stopDrag(event); };
@@ -150,19 +156,27 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         if (node.isDragging() && !track?.local) { dragging.current.delete(token.id); node.stopDrag(); }
         if (!node.isDragging()) node.position(point);
         const foreign = !!track && !track.local && !track.finished;
-        node.draggable(canMoveToken(token, actor) && tool === 'select' && !panning && !pending && !foreign);
+        node.draggable(movable(token) && tool === 'select' && !panning && !pending && !foreign);
         node.findOne<Konva.Circle>('.motion-indicator')?.visible(foreign);
         const label = node.findOne<Konva.Text>('.motion-label'); label?.visible(foreign); if (foreign) label?.text(track.name || 'Участник');
         node.getLayer()?.batchDraw();
         if (motionStore.tracks.has(token.id)) animated.add(token.id); else animated.delete(token.id);
       }
+      if (primary && menuRef.current) {
+        const point = tokenMenuPlacement(worldToScreen(motionStore.position(primary.id, primary), camera), primary.size * scene.gridSize * 0.42 * camera.scale, viewport);
+        menuRef.current.style.left = `${point.x}px`; menuRef.current.style.top = `${point.y}px`;
+        menuRef.current.style.setProperty('--token-menu-radius', `${point.radius}px`);
+        const track = motionStore.tracks.get(primary.id);
+        menuRef.current.style.visibility = cameraActive() || dragging.current.size > 0 || (!!track && !track.finished) ? 'hidden' : '';
+      }
       firstFrame = false;
       frame = requestAnimationFrame(animate);
     }
     frame = requestAnimationFrame(animate); return () => cancelAnimationFrame(frame);
-  }, [scene, actor, tool, panning, pending, motionStore]);
-  return <div className="table-stage-wrap" ref={wrapRef} style={{ cursor: panning ? 'grab' : tool === 'draw' || tool === 'erase' ? 'crosshair' : 'default', touchAction: 'none' }}
+  }, [scene, actor, tool, panning, pending, motionStore, primary, camera, viewport]);
+  return <div className="table-stage-wrap" ref={wrapRef} style={{ cursor: panning ? 'grab' : tool === 'draw' || tool === 'erase' ? 'crosshair' : 'default', touchAction: 'auto' }}
     onMouseDownCapture={event => {
+      if ((event.target as Element)?.closest?.('[data-token-menu]')) return;
       if (event.button !== 1 && !(event.button === 0 && (space || tool === 'pan' || cameraOverride.current))) return;
       const stage = stageRef.current; if (!stage) return;
       event.preventDefault(); event.stopPropagation();
@@ -173,7 +187,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       stage.startDrag({ evt: event.nativeEvent });
     }}
     onAuxClick={event => { if (event.button === 1) event.preventDefault(); }}>
-    <Stage ref={stageRef} width={viewport.width} height={viewport.height} x={camera.x} y={camera.y} scaleX={camera.scale} scaleY={camera.scale} draggable={panning}
+    <Stage ref={stageRef} style={{ touchAction: 'none' }} width={viewport.width} height={viewport.height} x={camera.x} y={camera.y} scaleX={camera.scale} scaleY={camera.scale} draggable={panning}
       onDragEnd={event => { if (event.target === stageRef.current) setCamera(current => ({ ...current, x: event.target.x(), y: event.target.y() })); }}
       onWheel={event => { event.evt.preventDefault(); const point = stageRef.current?.getPointerPosition(); if (point) setCamera(current => zoomAt(current, point, event.evt.deltaY < 0 ? 1.12 : 1 / 1.12)); }}
       onMouseDown={event => { if (event.evt.button === 0) beginGesture(event.target === stageRef.current, event.evt.shiftKey); }}
@@ -202,27 +216,33 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         onMouseDown={event => { if (event.evt.button === 0) { event.cancelBubble = true; eraseDrawing(drawing.id); } }}
         onTouchStart={event => { if (event.evt.touches.length === 1) { event.cancelBubble = true; eraseDrawing(drawing.id); } }}/>) }
         {gesture?.kind === 'draw' && <Line points={gesture.drawing.points.length === 2 ? [...gesture.drawing.points, ...gesture.drawing.points] : gesture.drawing.points} stroke={gesture.drawing.color} strokeWidth={gesture.drawing.width} lineCap="round" lineJoin="round" listening={false}/>}</Layer>
-      <Layer>{scene.tokens.slice().sort((a, b) => Number(selectedSet.has(a.id)) - Number(selectedSet.has(b.id))).map(token => {
+      <Layer>{scene.tokens.slice().sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0)).map(token => {
         const radius = token.size * scene.gridSize * 0.42, selected = selectedSet.has(token.id);
-        const allowed = canMoveToken(token, actor);
+        const allowed = movable(token);
         const displayed = motionStore.position(token.id, token);
         return <Group ref={node => { if (node) tokenNodes.current.set(token.id, node); else tokenNodes.current.delete(token.id); }} key={token.id} id={token.id} x={displayed.x} y={displayed.y} listening={tool === 'select' || panning} draggable={allowed && tool === 'select' && !panning && !pending}
           onClick={event => { event.cancelBubble = true; if (tool === 'select' && !cameraActive() && event.evt.button !== 1) onSelect(token.id, event.evt.shiftKey); }} onTap={() => { if (tool === 'select' && !cameraActive()) onSelect(token.id); }}
-          onDragStart={event => { event.cancelBubble = true; if (tool !== 'select' || cameraActive() || pending) { event.target.stopDrag(); return; } if (!selected) onSelect(token.id, event.evt?.shiftKey); if (onMotionStart(token)) dragging.current.add(token.id); else { event.target.stopDrag(); event.target.position({ x: token.x, y: token.y }); } }}
+          onDragStart={event => { event.cancelBubble = true; if (!allowed || tool !== 'select' || cameraActive() || pending) { event.target.stopDrag(); return; } if (!selected) onSelect(token.id, event.evt?.shiftKey); if (onMotionStart(token)) dragging.current.add(token.id); else { event.target.stopDrag(); event.target.position({ x: token.x, y: token.y }); } }}
           onDragMove={event => { event.cancelBubble = true; if (!dragging.current.has(token.id)) return; const point = boundedGroupPoint(scene, token, { x: event.target.x(), y: event.target.y() }); event.target.position(point); onMotionPreview(token, point); }}
           onDragEnd={event => { event.cancelBubble = true; if (!dragging.current.delete(token.id)) return; const point = boundedGroupPoint(scene, token, snapCenter({ x: event.target.x(), y: event.target.y() }, scene.gridSize, snap && !event.evt?.ctrlKey && !event.evt?.altKey)); onMotionPreview(token, point, 85); onMotionEnd(token.id); }}>
           <Circle name="motion-indicator" visible={false} radius={radius + 6} stroke="#87b2c2" strokeWidth={3 / camera.scale} listening={false}/>
           <Text name="motion-label" visible={false} text="" x={-80} y={-radius - 27} width={160} align="center" fontSize={13} fill="#b7deeb" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>
           {selected && <Circle radius={radius + 7} stroke="#efd18b" strokeWidth={2.5 / camera.scale} dash={[7 / camera.scale, 4 / camera.scale]} listening={false}/>}
-          {token.assetId ? <><Circle radius={radius} fill="#252627" shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/><TokenPortrait campaignId={scene.campaignId} assetId={token.assetId} radius={radius}/></> : <><Circle radius={radius} fill="#252627" stroke={token.color} strokeWidth={4} shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/>
+          <Group rotation={token.rotation ?? 0}>{token.assetId ? <><Circle radius={radius} fill="#252627" shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/><TokenPortrait campaignId={scene.campaignId} assetId={token.assetId} radius={radius}/></> : <><Circle radius={radius} fill="#252627" stroke={token.color} strokeWidth={4} shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/>
           <Circle radius={radius - 5} fill={token.color} opacity={0.16} listening={false}/>
-          <Text text={token.name.match(/^Противник (\d+)$/)?.[1] ?? token.name.slice(0, 2).toLocaleUpperCase('ru-RU')} x={-radius} y={-radius * 0.44} width={radius * 2} fontSize={radius * 0.72} align="center" fill="#fff0d2" fontStyle="bold" listening={false}/></>}
-          {(selected || token.ownerId) && <Text text={token.name} x={-70} y={radius + 8} width={140} fontSize={14} align="center" fill="#f7e8ca" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>}
+          <Text text={token.name.match(/^Противник (\d+)$/)?.[1] ?? token.name.slice(0, 2).toLocaleUpperCase('ru-RU')} x={-radius} y={-radius * 0.44} width={radius * 2} fontSize={radius * 0.72} align="center" fill="#fff0d2" fontStyle="bold" listening={false}/></>}</Group>
+          {token.showLabel !== false && (token.showLabel || selected || token.ownerId) && <Text text={token.name} x={-70} y={radius + 8} width={140} fontSize={14} align="center" fill="#f7e8ca" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>}
+          {!!token.statuses?.length && <Group name="condition-badges" listening={false} x={radius - 13 / camera.scale} y={-radius - 8 / camera.scale} scaleX={1 / camera.scale} scaleY={1 / camera.scale}>
+            {token.statuses.slice(0, 4).map((status, index) => <Group key={status} x={(index % 2) * 27} y={Math.floor(index / 2) * 17}><Rect width={25} height={15} cornerRadius={3} fill="#202525" stroke={CONDITIONS[status].color} strokeWidth={1.5}/><Text text={CONDITIONS[status].short + (status === 'exhaustion' ? token.exhaustionLevel ?? 1 : '')} width={25} height={15} align="center" verticalAlign="middle" fontSize={9} fontStyle="bold" fill={CONDITIONS[status].color}/></Group>)}
+            {token.statuses.length > 4 && <Text text={`+${token.statuses.length - 4}`} x={0} y={34} width={52} height={15} align="center" fontSize={11} fill="#f7e8ca" stroke="#202525" strokeWidth={3} fillAfterStrokeEnabled/>}
+          </Group>}
           {token.ownerId && <Circle radius={5} x={radius * 0.75} y={-radius * 0.7} fill="#a9c496" stroke="#202723" strokeWidth={2} listening={false}/>}
         </Group>;
       })}</Layer>
       <Layer listening={false}>{gesture?.kind === 'select' && <Rect x={Math.min(gesture.from.x, gesture.to.x)} y={Math.min(gesture.from.y, gesture.to.y)} width={Math.abs(gesture.to.x - gesture.from.x)} height={Math.abs(gesture.to.y - gesture.from.y)} fill="#efd18b" opacity={0.22} stroke="#efd18b" strokeWidth={2 / camera.scale} dash={[6 / camera.scale, 4 / camera.scale]}/>}</Layer>
     </Stage>
+    <div className="table-token-status-accessibility" role="list" aria-label="Состояния фигур">{scene.tokens.filter(token => token.statuses?.length).map(token => <div role="listitem" key={token.id}>{token.name}: {token.statuses!.map(id => CONDITIONS[id].label + (id === 'exhaustion' ? ` ${token.exhaustionLevel ?? 1}` : '')).join(', ')}</div>)}</div>
+    {primary && onTokenAction && tool === 'select' && !panning && !gesture && <TokenContextMenu key={primary.id} menuRef={menuRef} token={primary} pending={pending} onAction={onTokenAction} position={worldToScreen(motionStore.position(primary.id, primary), camera)} radius={primary.size * scene.gridSize * 0.42 * camera.scale} viewport={viewport}/>}
     {!map && <div className="table-stage-loading">Расстилаем карту…</div>}
     <div className="table-zoom"><button aria-label="Уменьшить карту" onClick={() => zoom(1 / 1.25)}><ZoomOut size={18}/></button><output aria-label="Масштаб карты">{Math.round(camera.scale * 100)}%</output><button aria-label="Увеличить карту" onClick={() => zoom(1.25)}><ZoomIn size={18}/></button><button aria-label="Показать всю карту" onClick={fit}><Scan size={18}/></button></div>
     <div className="table-coordinate">{pointer ? `X ${Math.round(pointer.x)} · Y ${Math.round(pointer.y)}` : 'Колесо — масштаб'} · {scene.gridSize} px / 5 футов</div>

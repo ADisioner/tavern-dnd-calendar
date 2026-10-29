@@ -1,9 +1,14 @@
 import { z } from 'zod';
 import type { Point } from './geometry.ts';
+import { CONDITION_IDS } from './conditions.ts';
 
 export type TableMember = { userId: string; name: string; role: string };
 export type TableActor = { userId: string; name: string; role: 'master' | 'player' };
 const maxDrawingCoordinates = 40_000;
+const tokenMenuFields = { locked: z.boolean().optional(), rotation: z.number().finite().min(0).max(359).optional(),
+  layer: z.number().int().min(-10000).max(10000).optional(), showLabel: z.boolean().optional(),
+  statuses: z.array(z.enum(CONDITION_IDS)).max(CONDITION_IDS.length).refine(ids => new Set(ids).size === ids.length, 'Состояния не должны повторяться.').optional(),
+  exhaustionLevel: z.number().int().min(1).max(6).optional() };
 export const tokenSchema = z.object({
   id: z.string().uuid(), name: z.string().trim().min(1).max(40),
   x: z.number().finite().min(0).max(1600), y: z.number().finite().min(0).max(1120),
@@ -11,6 +16,7 @@ export const tokenSchema = z.object({
   ownerId: z.string().uuid().nullable(), version: z.number().int().nonnegative(),
   assetId: z.string().uuid().optional(),
   groupId: z.string().uuid().optional(),
+  ...tokenMenuFields,
 }).strict();
 export const drawingSchema = z.object({
   id: z.string().uuid(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
@@ -32,7 +38,8 @@ const envelope = z.object({ id: z.string().uuid(), baseRevision: z.number().int(
 const tokenIds = z.array(z.string().uuid()).min(1).max(150).refine(ids => new Set(ids).size === ids.length, 'Токены не должны повторяться.');
 export const commandSchema = z.discriminatedUnion('type', [
   envelope.extend({ type: z.literal('move'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), x: z.number().finite(), y: z.number().finite() }).strict(),
-  envelope.extend({ type: z.literal('update'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), name: z.string().trim().min(1).max(40), size: z.number().min(0.5).max(3), ownerId: z.string().uuid().nullable() }).strict(),
+  envelope.extend({ type: z.literal('update'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), name: z.string().trim().min(1).max(40), size: z.number().min(0.5).max(3), ownerId: z.string().uuid().nullable(), ...tokenMenuFields }).strict(),
+  envelope.extend({ type: z.literal('duplicate'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative() }).strict(),
   envelope.extend({ type: z.literal('remove'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative() }).strict(),
   envelope.extend({ type: z.literal('add'), ownerId: z.string().uuid().nullable(), assetId: z.string().uuid().optional(), name: z.string().trim().min(1).max(40).optional() }).strict(),
   envelope.extend({ type: z.literal('map'), assetId: z.string().uuid().nullable() }).strict(),
@@ -54,8 +61,8 @@ export class CommandError extends Error {
   code: string;
   constructor(code: string, message: string) { super(message); this.code = code; }
 }
-export function canMoveToken(_token: TableToken, actor: TableActor) {
-  return actor.role === 'master' || actor.role === 'player';
+export function canMoveToken(token: TableToken, actor: TableActor) {
+  return !token.locked && (actor.role === 'master' || actor.role === 'player');
 }
 export function linkedTokens(scene: TableScene, token: TableToken): TableToken[] {
   return scene.tokens.filter(value => token.groupId ? value.groupId === token.groupId : value.id === token.id)
@@ -123,16 +130,25 @@ export function applyTableCommand(scene: TableScene, command: TableCommand, acto
     }
     return sceneSchema.parse(next);
   }
-  if (command.type === 'move' || command.type === 'update' || command.type === 'remove') {
+  if (command.type === 'move' || command.type === 'update' || command.type === 'remove' || command.type === 'duplicate') {
     const token = next.tokens.find(t => t.id === command.tokenId);
     if (!token) throw new CommandError('missing', 'Токен больше не существует.');
-    if (!canMoveToken(token, actor)) throw new CommandError('forbidden', 'Нет доступа к движению токенов.');
     if (token.version !== command.expectedVersion) throw new CommandError('conflict', 'Токен уже изменён. Повторите действие.');
+    if (command.type === 'duplicate') {
+      if (next.tokens.some(value => value.id === command.id)) throw new CommandError('conflict', 'Копия уже существует.');
+      if (next.tokens.length >= 150) throw new CommandError('limit', 'На сцене доступно до 150 токенов.');
+      const copy = { ...token, id: command.id, locked: false, version: 0 };
+      delete copy.groupId;
+      Object.assign(copy, boundedGroupPoint({ ...next, tokens: [copy] }, copy, { x: token.x + scene.gridSize / 2, y: token.y + scene.gridSize / 2 }));
+      next.tokens.push(copy);
+      return sceneSchema.parse(next);
+    }
     if (command.type === 'remove') {
       next.tokens = next.tokens.filter(value => value.id !== token.id);
       return sceneSchema.parse(next);
     }
     if (command.type === 'move') {
+      if (linkedTokens(next, token).some(member => !canMoveToken(member, actor))) throw new CommandError('locked', 'Движение этой фигуры или её группы заблокировано.');
       const point = boundedGroupPoint(next, token, command), dx = point.x - token.x, dy = point.y - token.y;
       for (const member of linkedTokens(next, token)) {
         member.x += dx; member.y += dy; member.version++;
@@ -141,6 +157,7 @@ export function applyTableCommand(scene: TableScene, command: TableCommand, acto
     } else {
       if (command.ownerId && !roster.some(m => m.userId === command.ownerId)) throw new CommandError('owner', 'Управляющий должен состоять в кампании.');
       Object.assign(token, { name: command.name, size: command.size, ownerId: command.ownerId });
+      for (const key of ['locked', 'rotation', 'layer', 'showLabel', 'statuses', 'exhaustionLevel'] as const) if (command[key] !== undefined) Object.assign(token, { [key]: command[key] });
       const radius = token.size * scene.gridSize / 2;
       token.x = Math.max(radius, Math.min(scene.width - radius, token.x));
       token.y = Math.max(radius, Math.min(scene.height - radius, token.y));

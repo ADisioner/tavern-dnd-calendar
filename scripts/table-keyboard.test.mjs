@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { canMoveToken } from '../lib/table/scene.ts';
 
 function keyboard(overrides = {}, { editing = false, dialog = false } = {}) {
   const handlers = new Map(), effects = [], removed = [];
@@ -17,7 +18,7 @@ function keyboard(overrides = {}, { editing = false, dialog = false } = {}) {
   vm.runInNewContext(source, { exports, Element, setInterval, clearInterval,
     window: { addEventListener: (name, fn) => handlers.set(name, fn), removeEventListener() {} },
     document: { querySelector: () => dialog, addEventListener() {}, removeEventListener() {} },
-    require: name => name === 'react' ? { useRef: current => ({ current }), useEffect: fn => effects.push(fn) } : { canMoveToken: () => true },
+    require: name => name === 'react' ? { useRef: current => ({ current }), useEffect: fn => effects.push(fn) } : { canMoveToken },
   });
   exports.useTokenKeyboard(state); const cleanups = effects.map(fn => fn());
   let prevented = false;
@@ -27,6 +28,11 @@ function keyboard(overrides = {}, { editing = false, dialog = false } = {}) {
 
 test('Delete removes the selected token for an ordinary participant', () => {
   const view = keyboard(); try { view.press(); assert.deepEqual(view.removed, ['selected']); assert.equal(view.prevented(), true); } finally { view.cleanup(); }
+});
+
+test('Delete can remove a locked token because locking blocks movement only', () => {
+  const view = keyboard({ scene: { id: 'scene', tokens: [{ id: 'selected', version: 3, locked: true }] } });
+  try { view.press(); assert.deepEqual(view.removed, ['selected']); } finally { view.cleanup(); }
 });
 
 for (const [label, state, environment, event] of [

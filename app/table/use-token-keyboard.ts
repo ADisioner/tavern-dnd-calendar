@@ -38,7 +38,7 @@ export function useTokenKeyboard(state: KeyboardState) {
         if (event.repeat || event.shiftKey || document.querySelector('dialog[open]') || editing(event.target)) return;
         const { scene, actor, selectedId, connection, pending, removeToken } = latest.current;
         const token = scene?.tokens.find(value => value.id === selectedId);
-        if (!token || !actor || !canMoveToken(token, actor) || connection !== 'connected' || pending) return;
+        if (!token || !actor || !['master', 'player'].includes(actor.role) || connection !== 'connected' || pending) return;
         event.preventDefault();
         // Finish a held WASD gesture first; a second Delete can act on its confirmed version.
         if (movingToken) { stop(); return; }

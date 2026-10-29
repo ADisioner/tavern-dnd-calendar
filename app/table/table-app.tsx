@@ -3,6 +3,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState, type ComponentType, type FormEvent } from 'react';
 import { ArrowLeft, MousePointer2, Hand, Grid2X2, Plus, Sun, Moon, RefreshCw, ArrowUp, ArrowDown, ArrowRight, ArrowLeft as MoveLeft, Users, Layers, Swords, FolderOpen, Trash2, Pencil, Eraser, Link2, Unlink2 } from 'lucide-react';
 import { canMoveToken, linkedTokens, type TableToken } from '@/lib/table/scene';
+import { CONDITION_IDS, type ConditionId } from '@/lib/table/conditions';
 import type { Point } from '@/lib/table/geometry';
 import { useTableRoom } from './use-table-room';
 import { useTokenKeyboard } from './use-token-keyboard';
@@ -52,7 +53,7 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
   const { scene, bootstrap } = room;
   const actor = bootstrap?.actor, master = actor?.role === 'master';
   const selected = scene?.tokens.find(token => token.id === selectedId);
-  const canMove = !!(actor && selected && canMoveToken(selected, actor));
+  const canMove = !!(actor && selected && scene && linkedTokens(scene, selected).every(token => canMoveToken(token, actor)));
   const disabled = room.connection !== 'connected' || room.pending;
   const previewing = master && scene?.id !== room.activeSceneId;
   const activeSceneName = room.scenes.find(value => value.id === room.activeSceneId)?.name;
@@ -93,6 +94,35 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     room.send({ type: 'update', tokenId: selected.id, expectedVersion: selected.version,
       name: String(form.get('name')), size: Number(form.get('size')), ownerId: String(form.get('ownerId')) || null });
   }
+  function tokenAction(token: TableToken, action: string, value?: string | boolean) {
+    if (disabled || !scene) return;
+    if (action === 'duplicate' || action === 'delete') {
+      return room.send({ type: action === 'delete' ? 'remove' : 'duplicate', tokenId: token.id, expectedVersion: token.version });
+    }
+    const patch: Partial<TableToken> = {};
+    if (action === 'smaller' || action === 'larger') patch.size = Math.max(0.5, Math.min(3, token.size + (action === 'larger' ? 0.5 : -0.5)));
+    else if (action === 'rotate') patch.rotation = ((token.rotation ?? 0) + 45) % 360;
+    else if (action === 'lock') patch.locked = !token.locked;
+    else if (action === 'front') patch.layer = Math.min(10000, Math.max(0, ...scene.tokens.map(value => value.layer ?? 0)) + 1);
+    else if (action === 'back') patch.layer = Math.max(-10000, Math.min(0, ...scene.tokens.map(value => value.layer ?? 0)) - 1);
+    else if (action === 'label' && typeof value === 'boolean') patch.showLabel = value;
+    else if (action === 'label' && typeof value === 'string') { const name = value.trim(); if (!name || name.length > 40) return; patch.name = name; }
+    else if (action === 'status' && typeof value === 'string') {
+      const statuses = token.statuses ?? [];
+      if (value === 'clear') patch.statuses = [];
+      else if (/^exhaustion:[1-6]$/.test(value)) {
+        patch.statuses = statuses.includes('exhaustion') ? [...statuses] : [...statuses, 'exhaustion'];
+        patch.exhaustionLevel = Number(value.split(':')[1]);
+      } else if (CONDITION_IDS.includes(value as ConditionId)) {
+        const id = value as ConditionId;
+        patch.statuses = statuses.includes(id) ? statuses.filter(status => status !== id) : [...statuses, id];
+        if (id === 'exhaustion' && !statuses.includes(id)) patch.exhaustionLevel = 1;
+      } else return;
+    }
+    else return;
+    return room.send({ type: 'update', tokenId: token.id, expectedVersion: token.version,
+      name: token.name, size: token.size, ownerId: token.ownerId, ...patch });
+  }
   return <div className="table-app">
     <header className="table-header"><button className="table-back" onClick={back} aria-label="Вернуться к календарю"><ArrowLeft size={18}/><span>Календарь</span></button><div className="table-title"><h1>{bootstrap?.campaign.name || 'Игровой стол'}</h1><small>{testMode ? 'Тест · Виртуальный стол' : 'Виртуальный стол'} · {master ? 'За ширмой мастера' : 'Место игрока'}</small></div><span className="table-connection" data-state={room.connection} role="status">{room.connection === 'connected' ? 'В сети' : room.connection === 'connecting' ? 'Подключаемся…' : 'Нет соединения'}</span><button className="table-theme-button" aria-label={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'} onClick={toggleTheme}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button></header>
     {testMode && <div className="table-test-notice"><strong>Тест</strong><span>Экспериментальный виртуальный стол. Сцены и материалы сохраняются отдельно от календаря.</span></div>}
@@ -101,7 +131,7 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     {previewing && scene && <div className="scene-preview-notice" role="status"><span>За ширмой: <strong>{scene.name}</strong>. Группа остаётся на сцене «{activeSceneName}».</span><button className="small-button" disabled={disabled} onClick={() => room.send({ type: 'scene-activate', targetSceneId: scene.id })}>Показать группе</button><button className="text-button" disabled={disabled} onClick={() => room.send({ type: 'scene-view', targetSceneId: room.activeSceneId })}>Вернуться к группе</button></div>}
     <div className="table-main">
       <aside className="table-tools" aria-label="Инструменты карты"><button className="table-tool" title="Выбор токенов" aria-label="Выбор токенов" aria-pressed={tool === 'select'} onClick={() => setTool('select')}><MousePointer2 size={20}/></button><button className="table-tool" title="Перемещение карты" aria-label="Перемещение карты" aria-pressed={tool === 'pan'} onClick={() => setTool('pan')}><Hand size={21}/></button><button className="table-tool" title="Привязка к клеткам" aria-label="Привязка к клеткам" aria-pressed={snap} onClick={() => setSnap(value => !value)}><Grid2X2 size={20}/></button><button className="table-tool" title="Кисть" aria-label="Кисть" aria-pressed={tool === 'draw'} onClick={() => setTool('draw')}><Pencil size={20}/></button><button className="table-tool" title="Ластик" aria-label="Ластик" aria-pressed={tool === 'erase'} onClick={() => setTool('erase')}><Eraser size={20}/></button><button className="table-tool" title="Добавить токен" aria-label="Добавить токен" disabled={disabled} onClick={() => room.send({ type: 'add', ownerId: actor?.userId ?? null })}><Plus size={22}/></button><button className="table-tool" title="Библиотека материалов" aria-label="Библиотека материалов" onClick={() => setLibraryOpen(true)}><FolderOpen size={21}/></button></aside>
-      {Canvas && shownScene && actor ? <Canvas key={shownScene.id} scene={shownScene} actor={actor} selectedId={selectedId} tool={tool} snap={snap} pending={disabled} selectedIds={selectedIds} onSelect={selectToken} onSelectMany={selectMany} brushColor={brushColor} brushWidth={brushWidth} onDraw={drawing => room.send({ type: 'draw', drawing })} onErase={drawingId => room.send({ type: 'erase', drawingId })} onMove={move} motionStore={room.motionStore} onMotionStart={room.startMotion} onMotionPreview={room.previewMotion} onMotionEnd={room.endMotion}/> : <div className="table-stage-wrap"><div className="table-stage-loading">Готовим карту и фигурки…</div></div>}
+      {Canvas && shownScene && actor ? <Canvas key={shownScene.id} scene={shownScene} actor={actor} selectedId={selectedId} tool={tool} snap={snap} pending={disabled} selectedIds={selectedIds} onSelect={selectToken} onSelectMany={selectMany} brushColor={brushColor} brushWidth={brushWidth} onDraw={drawing => room.send({ type: 'draw', drawing })} onErase={drawingId => room.send({ type: 'erase', drawingId })} onMove={move} onTokenAction={tokenAction} motionStore={room.motionStore} onMotionStart={room.startMotion} onMotionPreview={room.previewMotion} onMotionEnd={room.endMotion}/> : <div className="table-stage-wrap"><div className="table-stage-loading">Готовим карту и фигурки…</div></div>}
       <aside className="table-inspector" aria-label="Настройки игрового стола">
         {master && scene && <SceneLibrary scenes={room.scenes} activeSceneId={room.activeSceneId} viewedSceneId={scene.id} disabled={disabled} send={room.send}/>}
         <section className="table-card"><div className="table-section-heading"><Layers size={17}/> Сцена</div><h2>{scene?.name || 'Готовим таверну…'}</h2><p>Поле 1600 × 1120 px · {scene?.mapAssetId ? 'ваша карта' : 'карта таверны'}. Карта, сетка и токены сохраняются для этой кампании.</p><button className="small-button library-open-button" onClick={() => setLibraryOpen(true)}><FolderOpen size={16}/> Открыть библиотеку</button>{master && scene?.mapAssetId && <button className="text-button" disabled={disabled} onClick={() => room.send({ type: 'map', assetId: null })}>Вернуть карту таверны</button>}<span className="table-chip">{scene?.tokens.length ?? 0} токенов · ревизия {scene?.revision ?? 0}</span>

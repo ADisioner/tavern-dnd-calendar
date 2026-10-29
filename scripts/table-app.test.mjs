@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import * as sceneModel from '../lib/table/scene.ts';
+import * as conditions from '../lib/table/conditions.ts';
 
 function app() {
   const tokens = [
@@ -29,6 +30,7 @@ function app() {
     if (name.includes('use-table-room')) return { useTableRoom: () => room };
     if (name.includes('use-token-keyboard')) return { useTokenKeyboard: value => { keyboard = value; } };
     if (name.endsWith('/scene')) return sceneModel;
+    if (name.endsWith('/conditions')) return conditions;
     return {};
   } });
   function render() { cursor = 0; return exports.default({ campaignId: 'campaign' }); }
@@ -71,4 +73,44 @@ test('selection follows a remotely merged group and Shift can still deselect the
   assert.equal(view.canvas().selectedId, 'a');
   view.canvas().onSelect('b', true);
   assert.deepEqual([...view.canvas().selectedIds], []);
+});
+
+test('token menu updates size, rotation, lock, layer and label using the selected version', () => {
+  const view = app(); view.canvas().onSelect('a');
+  for (const [action, value, field, expected] of [
+    ['larger', undefined, 'size', 1.5], ['smaller', undefined, 'size', 0.5],
+    ['rotate', undefined, 'rotation', 45], ['lock', undefined, 'locked', true],
+    ['front', undefined, 'layer', 1], ['back', undefined, 'layer', -1],
+    ['label', false, 'showLabel', false], ['label', 'New label', 'name', 'New label'],
+  ]) {
+    view.canvas().onTokenAction?.(view.tokens[0], action, value);
+    const command = view.sent.at(-1);
+    assert.ok(command, action); assert.equal(command.type, 'update');
+    assert.equal(command.expectedVersion, 2); assert.equal(command[field], expected);
+  }
+});
+
+test('token menu copy and delete target the primary token only', () => {
+  const view = app(); view.canvas().onSelectMany(['a', 'b']);
+  view.canvas().onTokenAction?.(view.tokens[0], 'duplicate');
+  view.canvas().onTokenAction?.(view.tokens[0], 'delete');
+  assert.deepEqual(Array.from(view.sent, value => [value.type, value.tokenId, value.expectedVersion]), [['duplicate', 'a', 2], ['remove', 'a', 2]]);
+});
+
+test('status menu toggles validated conditions, exhaustion level and clear without changing other token properties', () => {
+  const view = app(); view.canvas().onSelect('a');
+  view.tokens[0].statuses = ['poisoned'];
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'frightened');
+  assert.deepEqual([...view.sent.at(-1).statuses], ['poisoned', 'frightened']);
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'poisoned');
+  assert.deepEqual([...view.sent.at(-1).statuses], []);
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'exhaustion:4');
+  assert.deepEqual([...view.sent.at(-1).statuses], ['poisoned', 'exhaustion']);
+  assert.equal(view.sent.at(-1).exhaustionLevel, 4);
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'clear');
+  assert.deepEqual([...view.sent.at(-1).statuses], []);
+  const count = view.sent.length;
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'invalid');
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'exhaustion:9');
+  assert.equal(view.sent.length, count);
 });

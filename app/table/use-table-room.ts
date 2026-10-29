@@ -127,6 +127,7 @@ export function useTableRoom(campaignId: string) {
     const socket = socketRef.current, scene = sceneRef.current;
     if (socket?.readyState !== WebSocket.OPEN || !scene || pendingRef.current) return false;
     const grabbed = scene.tokens.find(value => value.id === token.id); if (!grabbed) return false;
+    if (linkedTokens(scene, grabbed).some(member => member.locked)) { setError('Движение этой фигуры или её группы заблокировано.'); return false; }
     token = linkedTokens(scene, grabbed)[0];
     const track = motionStore.tracks.get(token.id);
     if (track && !track.local && !track.finished && track.expires > performance.now()) { setError('Этот токен сейчас двигает другой участник.'); return false; }
