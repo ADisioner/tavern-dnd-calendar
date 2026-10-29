@@ -6,7 +6,7 @@ import { ZoomIn, ZoomOut, Scan } from 'lucide-react';
 import { fitCamera, zoomAt, snapCenter, screenToWorld, worldToScreen, type Camera, type Point } from '@/lib/table/geometry';
 import { boundedGroupPoint, canMoveToken, linkedTokens, type TableActor, type TableScene, type TableToken } from '@/lib/table/scene';
 import { assetUrl } from '@/lib/table/assets';
-import { type MotionStore } from '@/lib/table/motion';
+import { boundedPoint, type MotionStore } from '@/lib/table/motion';
 import { tokensInRect } from '@/lib/table/selection';
 import TokenContextMenu, { tokenMenuPlacement, type TokenActionHandler } from './token-context-menu';
 import { CONDITIONS } from '@/lib/table/conditions';
@@ -45,7 +45,14 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
   const gestureRef = useRef<CanvasGesture | null>(null), cameraOverride = useRef(false), pinching = useRef(false);
   const [gesture, setGesture] = useState<CanvasGesture | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [resizePreview, setResizePreview] = useState<{ id: string; version: number; size: number; committed: boolean } | null>(null);
   const primary = scene.tokens.find(token => token.id === (selectedId ?? selectedIds?.at(-1)));
+  const previewToken = (token: TableToken) => resizePreview?.id === token.id ? { ...token, size: resizePreview.size } : token;
+  const resize = (size: number | null) => setResizePreview(size === null || !primary ? null : { id: primary.id, version: primary.version, size, committed: false });
+  const tokenAction: TokenActionHandler = (token, action, value) => {
+    if (action === 'resize' && typeof value === 'number') setResizePreview({ id: token.id, version: token.version, size: value, committed: true });
+    onTokenAction?.(token, action, value);
+  };
   const movable = (token: TableToken) => canMoveToken(token, actor) && !linkedTokens(scene, token).some(member => member.locked);
   const selectedSet = new Set(selectedIds ?? (selectedId ? [selectedId] : []));
   const cancelGesture = () => { gestureRef.current = null; setGesture(null); };
@@ -152,7 +159,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         const track = motionStore.tracks.get(token.id);
         if (!firstFrame && !track && !animated.has(token.id)) continue;
         const node = tokenNodes.current.get(token.id); if (!node) continue;
-        const point = motionStore.position(token.id, token);
+        const point = resizePreview?.id === token.id ? boundedPoint(previewToken(token), scene.gridSize, token) : motionStore.position(token.id, token);
         if (node.isDragging() && !track?.local) { dragging.current.delete(token.id); node.stopDrag(); }
         if (!node.isDragging()) node.position(point);
         const foreign = !!track && !track.local && !track.finished;
@@ -163,7 +170,8 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         if (motionStore.tracks.has(token.id)) animated.add(token.id); else animated.delete(token.id);
       }
       if (primary && menuRef.current) {
-        const point = tokenMenuPlacement(worldToScreen(motionStore.position(primary.id, primary), camera), primary.size * scene.gridSize * 0.42 * camera.scale, viewport);
+        const displayed = resizePreview?.id === primary.id ? boundedPoint(previewToken(primary), scene.gridSize, primary) : motionStore.position(primary.id, primary);
+        const point = tokenMenuPlacement(worldToScreen(displayed, camera), previewToken(primary).size * scene.gridSize * 0.42 * camera.scale, viewport);
         menuRef.current.style.left = `${point.x}px`; menuRef.current.style.top = `${point.y}px`;
         menuRef.current.style.setProperty('--token-menu-radius', `${point.radius}px`);
         const track = motionStore.tracks.get(primary.id);
@@ -173,7 +181,10 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       frame = requestAnimationFrame(animate);
     }
     frame = requestAnimationFrame(animate); return () => cancelAnimationFrame(frame);
-  }, [scene, actor, tool, panning, pending, motionStore, primary, camera, viewport]);
+  }, [scene, actor, tool, panning, pending, motionStore, primary, camera, viewport, resizePreview]);
+  useEffect(() => {
+    if (resizePreview && (resizePreview.id !== primary?.id || resizePreview.version !== primary.version || resizePreview.committed && !pending)) setResizePreview(null);
+  }, [primary?.id, primary?.version, pending, resizePreview]);
   return <div className="table-stage-wrap" ref={wrapRef} style={{ cursor: panning ? 'grab' : tool === 'draw' || tool === 'erase' ? 'crosshair' : 'default', touchAction: 'auto' }}
     onMouseDownCapture={event => {
       if ((event.target as Element)?.closest?.('[data-token-menu]')) return;
@@ -216,10 +227,11 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         onMouseDown={event => { if (event.evt.button === 0) { event.cancelBubble = true; eraseDrawing(drawing.id); } }}
         onTouchStart={event => { if (event.evt.touches.length === 1) { event.cancelBubble = true; eraseDrawing(drawing.id); } }}/>) }
         {gesture?.kind === 'draw' && <Line points={gesture.drawing.points.length === 2 ? [...gesture.drawing.points, ...gesture.drawing.points] : gesture.drawing.points} stroke={gesture.drawing.color} strokeWidth={gesture.drawing.width} lineCap="round" lineJoin="round" listening={false}/>}</Layer>
-      <Layer>{scene.tokens.slice().sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0)).map(token => {
+      <Layer>{scene.tokens.slice().sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0)).map(sourceToken => {
+        const token = previewToken(sourceToken);
         const radius = token.size * scene.gridSize * 0.42, selected = selectedSet.has(token.id);
         const allowed = movable(token);
-        const displayed = motionStore.position(token.id, token);
+        const displayed = resizePreview?.id === token.id ? boundedPoint(token, scene.gridSize, token) : motionStore.position(token.id, token);
         return <Group ref={node => { if (node) tokenNodes.current.set(token.id, node); else tokenNodes.current.delete(token.id); }} key={token.id} id={token.id} x={displayed.x} y={displayed.y} listening={tool === 'select' || panning} draggable={allowed && tool === 'select' && !panning && !pending}
           onClick={event => { event.cancelBubble = true; if (tool === 'select' && !cameraActive() && event.evt.button !== 1) onSelect(token.id, event.evt.shiftKey); }} onTap={() => { if (tool === 'select' && !cameraActive()) onSelect(token.id); }}
           onDragStart={event => { event.cancelBubble = true; if (!allowed || tool !== 'select' || cameraActive() || pending) { event.target.stopDrag(); return; } if (!selected) onSelect(token.id, event.evt?.shiftKey); if (onMotionStart(token)) dragging.current.add(token.id); else { event.target.stopDrag(); event.target.position({ x: token.x, y: token.y }); } }}
@@ -242,7 +254,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       <Layer listening={false}>{gesture?.kind === 'select' && <Rect x={Math.min(gesture.from.x, gesture.to.x)} y={Math.min(gesture.from.y, gesture.to.y)} width={Math.abs(gesture.to.x - gesture.from.x)} height={Math.abs(gesture.to.y - gesture.from.y)} fill="#efd18b" opacity={0.22} stroke="#efd18b" strokeWidth={2 / camera.scale} dash={[6 / camera.scale, 4 / camera.scale]}/>}</Layer>
     </Stage>
     <div className="table-token-status-accessibility" role="list" aria-label="Состояния фигур">{scene.tokens.filter(token => token.statuses?.length).map(token => <div role="listitem" key={token.id}>{token.name}: {token.statuses!.map(id => CONDITIONS[id].label + (id === 'exhaustion' ? ` ${token.exhaustionLevel ?? 1}` : '')).join(', ')}</div>)}</div>
-    {primary && onTokenAction && tool === 'select' && !panning && !gesture && <TokenContextMenu key={primary.id} menuRef={menuRef} token={primary} pending={pending} onAction={onTokenAction} position={worldToScreen(motionStore.position(primary.id, primary), camera)} radius={primary.size * scene.gridSize * 0.42 * camera.scale} viewport={viewport}/>}
+    {primary && onTokenAction && tool === 'select' && !panning && !gesture && <TokenContextMenu key={primary.id} menuRef={menuRef} token={previewToken(primary)} pending={pending} onAction={tokenAction} onResizePreview={resize} resizePixelsPerCell={Math.max(24, scene.gridSize * camera.scale)} position={worldToScreen(resizePreview?.id === primary.id ? boundedPoint(previewToken(primary), scene.gridSize, primary) : motionStore.position(primary.id, primary), camera)} radius={previewToken(primary).size * scene.gridSize * 0.42 * camera.scale} viewport={viewport}/>}
     {!map && <div className="table-stage-loading">Расстилаем карту…</div>}
     <div className="table-zoom"><button aria-label="Уменьшить карту" onClick={() => zoom(1 / 1.25)}><ZoomOut size={18}/></button><output aria-label="Масштаб карты">{Math.round(camera.scale * 100)}%</output><button aria-label="Увеличить карту" onClick={() => zoom(1.25)}><ZoomIn size={18}/></button><button aria-label="Показать всю карту" onClick={fit}><Scan size={18}/></button></div>
     <div className="table-coordinate">{pointer ? `X ${Math.round(pointer.x)} · Y ${Math.round(pointer.y)}` : 'Колесо — масштаб'} · {scene.gridSize} px / 5 футов</div>

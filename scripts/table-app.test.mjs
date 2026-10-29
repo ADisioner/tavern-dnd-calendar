@@ -78,6 +78,7 @@ test('selection follows a remotely merged group and Shift can still deselect the
 test('token menu updates size, rotation, lock, layer and label using the selected version', () => {
   const view = app(); view.canvas().onSelect('a');
   for (const [action, value, field, expected] of [
+    ['resize', 1.73, 'size', 1.73], ['resize', 10, 'size', 3], ['resize', -1, 'size', 0.5],
     ['larger', undefined, 'size', 1.5], ['smaller', undefined, 'size', 0.5],
     ['rotate', undefined, 'rotation', 45], ['lock', undefined, 'locked', true],
     ['front', undefined, 'layer', 1], ['back', undefined, 'layer', -1],
@@ -95,6 +96,14 @@ test('token menu copy and delete target the primary token only', () => {
   view.canvas().onTokenAction?.(view.tokens[0], 'duplicate');
   view.canvas().onTokenAction?.(view.tokens[0], 'delete');
   assert.deepEqual(Array.from(view.sent, value => [value.type, value.tokenId, value.expectedVersion]), [['duplicate', 'a', 2], ['remove', 'a', 2]]);
+});
+
+test('the inspector can preserve a fractional size from dragging when editing other properties', () => {
+  const view = app(); view.tokens[0].size = 1.37; view.canvas().onSelect('a');
+  const field = view.nodes(view.render()).find(node => node.props?.name === 'size');
+  assert.ok(field); assert.equal(field.props.defaultValue, 1.37);
+  if (field.type === 'select') assert.ok(view.nodes(field).some(node => node.type === 'option' && node.props.value === 1.37));
+  else { assert.equal(field.props.type, 'number'); assert.equal(field.props.step, 0.01); }
 });
 
 test('status menu toggles validated conditions, exhaustion level and clear without changing other token properties', () => {

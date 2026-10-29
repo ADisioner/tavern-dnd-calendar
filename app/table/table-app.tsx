@@ -94,13 +94,14 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     room.send({ type: 'update', tokenId: selected.id, expectedVersion: selected.version,
       name: String(form.get('name')), size: Number(form.get('size')), ownerId: String(form.get('ownerId')) || null });
   }
-  function tokenAction(token: TableToken, action: string, value?: string | boolean) {
+  function tokenAction(token: TableToken, action: string, value?: string | boolean | number) {
     if (disabled || !scene) return;
     if (action === 'duplicate' || action === 'delete') {
       return room.send({ type: action === 'delete' ? 'remove' : 'duplicate', tokenId: token.id, expectedVersion: token.version });
     }
     const patch: Partial<TableToken> = {};
-    if (action === 'smaller' || action === 'larger') patch.size = Math.max(0.5, Math.min(3, token.size + (action === 'larger' ? 0.5 : -0.5)));
+    if (action === 'resize' && typeof value === 'number' && Number.isFinite(value)) patch.size = Math.max(0.5, Math.min(3, value));
+    else if (action === 'smaller' || action === 'larger') patch.size = Math.max(0.5, Math.min(3, token.size + (action === 'larger' ? 0.5 : -0.5)));
     else if (action === 'rotate') patch.rotation = ((token.rotation ?? 0) + 45) % 360;
     else if (action === 'lock') patch.locked = !token.locked;
     else if (action === 'front') patch.layer = Math.min(10000, Math.max(0, ...scene.tokens.map(value => value.layer ?? 0)) + 1);
@@ -150,7 +151,7 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
           </div>}
           {selected && <><div className="table-token-heading"><span className="table-token-avatar" style={{ borderColor: selected.color }}>{selected.assetId ? <img src={assetUrl(campaignId, selected.assetId)} alt=""/> : selected.name.slice(0, 2)}</span><strong>{selected.name}</strong></div><p>X {Math.round(selected.x)} · Y {Math.round(selected.y)} · {selected.size} клетки</p>
             <div className="table-nudge" aria-label="Переместить выбранный токен">{[{ x: -1, y: 0, icon: MoveLeft, label: 'Влево' }, { x: 0, y: -1, icon: ArrowUp, label: 'Вверх' }, { x: 0, y: 1, icon: ArrowDown, label: 'Вниз' }, { x: 1, y: 0, icon: ArrowRight, label: 'Вправо' }].map(({ x, y, icon: Icon, label }) => <button className="small-button" key={label} aria-label={label} disabled={!canMove || disabled} onClick={() => move(selected, { x: selected.x + x * scene!.gridSize, y: selected.y + y * scene!.gridSize })}><Icon size={16}/></button>)}</div><p className="table-keyboard-hint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — шаг на клетку · удерживайте для движения</p>
-            <form key={selected.id + ':' + selected.name + ':' + selected.size + ':' + selected.ownerId} onSubmit={updateToken}><label>Имя токена<input name="name" defaultValue={selected.name} maxLength={40} required disabled={disabled}/></label><div className="table-field-row"><label>Размер<select name="size" defaultValue={selected.size} disabled={disabled}>{[0.5, 1, 2, 3].map(value => <option key={value} value={value}>{value} кл.</option>)}</select></label><label>Владелец<select name="ownerId" defaultValue={selected.ownerId ?? ''} disabled={disabled}><option value="">Мастер</option>{bootstrap?.roster.map(member => <option value={member.userId} key={member.userId}>{member.name}</option>)}</select></label></div><button className="small-button" disabled={disabled}>Сохранить токен</button></form>
+            <form key={selected.id + ':' + selected.name + ':' + selected.size + ':' + selected.ownerId} onSubmit={updateToken}><label>Имя токена<input name="name" defaultValue={selected.name} maxLength={40} required disabled={disabled}/></label><div className="table-field-row"><label>Размер<input name="size" type="number" defaultValue={selected.size} min={0.5} max={3} step={0.01} inputMode="decimal" required disabled={disabled}/></label><label>Владелец<select name="ownerId" defaultValue={selected.ownerId ?? ''} disabled={disabled}><option value="">Мастер</option>{bootstrap?.roster.map(member => <option value={member.userId} key={member.userId}>{member.name}</option>)}</select></label></div><button className="small-button" disabled={disabled}>Сохранить токен</button></form>
             <button className="table-action table-delete-token" disabled={disabled} onClick={() => removeToken(selected)}><Trash2 size={16}/> {selectedIds.length > 1 ? 'Удалить выбранные' : 'Удалить с карты'} <kbd>Del</kbd></button>
           </>}
           <div className="table-token-list" aria-label="Список токенов">{scene?.tokens.map(token => <button key={token.id} aria-pressed={selectedIds.includes(token.id)} onClick={event => selectToken(token.id, event.shiftKey)}><span style={{ color: token.color }}>●</span><span>{token.name}</span><small>{token.groupId ? 'В группе' : 'Выбрать'}</small></button>)}</div>

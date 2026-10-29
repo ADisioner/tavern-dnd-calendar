@@ -7,14 +7,15 @@ import * as geometry from '../lib/table/geometry.ts';
 import * as selection from '../lib/table/selection.ts';
 import * as sceneModule from '../lib/table/scene.ts';
 import * as conditions from '../lib/table/conditions.ts';
+import * as motion from '../lib/table/motion.ts';
 
 // Render the actual canvas handlers without a browser or GPU.
 function canvas(tool = 'select', options = {}) {
   const effects = [], refs = [], listeners = new Map(), previews = [], ended = [], drawings = [], erased = [], selections = [];
-  let refCursor = 0;
+  let refCursor = 0, stateCursor = 0; const states = [];
   const jsx = (type, props) => ({ type, props });
   const react = {
-    useState: value => [value?.scale && options.camera ? options.camera : value, () => {}],
+    useState: value => { const i = stateCursor++; if (!(i in states)) states[i] = value?.scale && options.camera ? options.camera : value; return [states[i], next => { states[i] = typeof next === 'function' ? next(states[i]) : next; }]; },
     useRef: value => refs[refCursor++] ?? (refs[refCursor - 1] = { current: value }),
     useEffect: effect => effects.push(effect), useCallback: callback => callback,
   };
@@ -30,7 +31,7 @@ function canvas(tool = 'select', options = {}) {
     if (name.includes('/selection')) return selection;
     if (name.includes('/conditions')) return conditions;
     if (name.includes('/scene')) return { ...sceneModule, canMoveToken: () => true };
-    if (name.includes('/motion')) return { boundedPoint: (_token, _grid, point) => point };
+    if (name.includes('/motion')) return motion;
     return {};
   }, crypto: { randomUUID: () => 'stroke-one' }, document: { querySelector: () => null }, HTMLElement: class {}, window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: () => {} } });
   const token = { id: 'one', x: 40, y: 40, size: 1, name: 'Hero' };
@@ -44,8 +45,22 @@ function canvas(tool = 'select', options = {}) {
   const nodes = node => !node || typeof node !== 'object' ? [] : [node, ...[node.props?.children].flat(Infinity).flatMap(nodes)];
   const group = nodes(stage).find(node => node.type === 'Group' && node.props.id === 'one');
   return { tree, stage, group, refs, effects, listeners, previews, ended, drawings, erased, selections, nodes,
-    rerender: next => { refCursor = 0; return exports.default({ ...props, ...next }); } };
+    rerender: next => { refCursor = 0; stateCursor = 0; return exports.default({ ...props, ...next }); } };
 }
+
+test('resizing previews the token locally and clamps its center, cancellation restores the saved size', () => {
+  const actions = [], view = canvas('select', { selectedId: 'one', onTokenAction: (...args) => actions.push(args) });
+  const menu = view.nodes(view.tree).find(node => node.props?.onResizePreview);
+  assert.ok(menu); menu.props.onResizePreview(1.5);
+  const tree = view.rerender({});
+  const group = view.nodes(tree).find(node => node.type === 'Group' && node.props.id === 'one');
+  const body = view.nodes(group).find(node => node.type === 'Circle' && node.props.fill === '#252627');
+  assert.equal(body.props.radius, 1.5 * 80 * 0.42); assert.equal(group.props.x, 60);
+  assert.equal(actions.length, 0);
+  view.nodes(tree).find(node => node.props?.onResizePreview).props.onResizePreview(null);
+  const restored = view.nodes(view.rerender({})).find(node => node.type === 'Group' && node.props.id === 'one');
+  assert.equal(restored.props.x, 40);
+});
 
 for (const tool of ['select', 'pan', 'draw', 'erase']) test(`middle mouse starts camera drag over tokens in ${tool} mode without selection`, () => {
   const view = canvas(tool);

@@ -1,43 +1,78 @@
 'use client';
-import { useEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
-import { Minus, Plus, RotateCw, Lock, LockOpen, Layers, Copy, Tag, Trash2, Ellipsis } from 'lucide-react';
+import { useEffect, useRef, useState, type CSSProperties, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
+import { MoveHorizontal, RotateCw, Lock, LockOpen, Layers, Copy, Tag, Trash2, Ellipsis } from 'lucide-react';
 import type { TableToken } from '@/lib/table/scene';
 import type { Point } from '@/lib/table/geometry';
 import { CONDITION_IDS, CONDITIONS } from '@/lib/table/conditions';
 
-export type TokenAction = 'smaller' | 'larger' | 'rotate' | 'lock' | 'front' | 'back' | 'duplicate' | 'label' | 'delete' | 'status';
-export type TokenActionHandler = (token: TableToken, action: TokenAction, value?: string | boolean) => void;
+export type TokenAction = 'smaller' | 'larger' | 'resize' | 'rotate' | 'lock' | 'front' | 'back' | 'duplicate' | 'label' | 'delete' | 'status';
+export type TokenActionHandler = (token: TableToken, action: TokenAction, value?: string | boolean | number) => void;
 export function tokenMenuPlacement(point: Point, radius: number, viewport: { width: number; height: number }) {
   const r = Math.max(24, Math.min(radius, viewport.width / 2 - 54, viewport.height / 2 - 70));
   const side = Math.max(142, r + 52);
   return { x: Math.max(Math.min(side, viewport.width / 2), Math.min(viewport.width - side, point.x)),
     y: Math.max(Math.max(88, r + 52), Math.min(viewport.height - r - 68, point.y)), radius: r };
 }
-export default function TokenContextMenu({ token, pending, radius, position, viewport, onAction, menuRef }: {
+export default function TokenContextMenu({ token, pending, radius, position, viewport, onAction, menuRef, resizePixelsPerCell = 80, onResizePreview }: {
   token: TableToken; pending: boolean; radius: number; position: Point; viewport: { width: number; height: number };
   onAction: TokenActionHandler; menuRef?: RefObject<HTMLDivElement | null>;
+  resizePixelsPerCell?: number; onResizePreview?: (size: number | null) => void;
 }) {
   const ownRef = useRef<HTMLDivElement>(null), rootRef = menuRef ?? ownRef;
   const [popup, setPopup] = useState<'layer' | 'label' | 'more' | null>(null), [name, setName] = useState(token.name);
   const [statusTab, setStatusTab] = useState(false);
   const buttonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const resize = useRef<{ pointerId: number; x: number; size: number; value: number; pixels: number; token: TableToken; target: HTMLButtonElement } | null>(null);
+  const cancelResize = () => {
+    const current = resize.current; if (!current) return;
+    resize.current = null; onResizePreview?.(null);
+    if (current.target.hasPointerCapture?.(current.pointerId)) current.target.releasePointerCapture(current.pointerId);
+  };
+  useEffect(() => { cancelResize(); }, [token.id, token.version, pending]);
+  useEffect(() => {
+    window.addEventListener('blur', cancelResize);
+    return () => { window.removeEventListener('blur', cancelResize); cancelResize(); };
+  }, []);
   useEffect(() => { setPopup(null); setName(token.name); setStatusTab(false); }, [token.id, token.name]);
   useEffect(() => {
     const outside = (event: PointerEvent) => { if (rootRef.current && !rootRef.current.contains(event.target as Node)) setPopup(null); };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { setPopup(null); buttonRefs.current.get(popup ?? '')?.focus(); } };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { cancelResize(); setPopup(null); buttonRefs.current.get(popup ?? '')?.focus(); } };
     document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
   }, [popup, rootRef]);
   const point = tokenMenuPlacement(position, radius, viewport);
-  const action = (kind: TokenAction, value?: string | boolean) => { if (!pending) onAction(token, kind, value); };
+  const action = (kind: TokenAction, value?: string | boolean | number) => { if (!pending) onAction(token, kind, value); };
   const toggle = (kind: 'layer' | 'label' | 'more') => setPopup(current => current === kind ? null : kind);
   const stop = (event: { stopPropagation(): void }) => event.stopPropagation();
+  const sizeAt = (x: number, current: NonNullable<typeof resize.current>) => x === current.x ? current.size : Math.max(0.5, Math.min(3, Math.round((current.size + (x - current.x) / current.pixels) * 100) / 100));
+  const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (pending || event.button !== 0) return;
+    event.preventDefault(); event.stopPropagation(); setPopup(null);
+    resize.current = { pointerId: event.pointerId, x: event.clientX, size: token.size, value: token.size, pixels: Math.max(24, resizePixelsPerCell), token, target: event.currentTarget };
+    event.currentTarget.setPointerCapture(event.pointerId); onResizePreview?.(token.size);
+  };
+  const moveResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = resize.current; if (!current || current.pointerId !== event.pointerId) return;
+    event.preventDefault(); current.value = sizeAt(event.clientX, current); onResizePreview?.(current.value);
+  };
+  const finishResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const current = resize.current; if (!current || current.pointerId !== event.pointerId) return;
+    event.preventDefault(); const size = sizeAt(event.clientX, current); resize.current = null;
+    if (current.target.hasPointerCapture?.(event.pointerId)) current.target.releasePointerCapture(event.pointerId);
+    if (size !== current.size && !pending) { onResizePreview?.(size); onAction(current.token, 'resize', size); }
+    else onResizePreview?.(null);
+  };
+  const resizeHandle = (side: 'слева' | 'справа', className: string) => <button type="button" role="slider" className={`token-menu-size ${className}`} aria-label={`Изменить размер ${side}`}
+    aria-valuemin={0.5} aria-valuemax={3} aria-valuenow={token.size} aria-valuetext={`${token.size} клетки`} title="Зажмите и тяните: вправо — больше, влево — меньше" disabled={pending}
+    onPointerDown={beginResize} onPointerMove={moveResize} onPointerUp={finishResize} onPointerCancel={cancelResize} onLostPointerCapture={cancelResize}
+    onKeyDown={event => { if (pending || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); event.stopPropagation();
+      action('resize', event.key === 'Home' ? 0.5 : event.key === 'End' ? 3 : Math.max(0.5, Math.min(3, Math.round((token.size + (event.key === 'ArrowRight' ? 0.1 : -0.1)) * 100) / 100))); }}><MoveHorizontal size={19}/></button>;
   return <div ref={rootRef} data-token-menu className="token-context-menu" role="group" aria-label={`Действия: ${token.name}`}
     style={{ left: point.x, top: point.y, '--token-menu-radius': `${point.radius}px` } as CSSProperties}
     onMouseDown={stop} onPointerDown={stop} onTouchStart={stop} onClick={stop} onDoubleClick={stop} onWheel={stop} onContextMenu={event => { stop(event); event.preventDefault(); }}
     onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}>
-    <button className="token-menu-size token-menu-smaller" aria-label="Уменьшить фигуру" title="Уменьшить фигуру" disabled={pending || token.size <= 0.5} onClick={() => action('smaller')}><Minus size={19}/></button>
-    <button className="token-menu-size token-menu-larger" aria-label="Увеличить фигуру" title="Увеличить фигуру" disabled={pending || token.size >= 3} onClick={() => action('larger')}><Plus size={19}/></button>
+    {resizeHandle('слева', 'token-menu-smaller')}
+    {resizeHandle('справа', 'token-menu-larger')}
     <button className="token-menu-rotate" aria-label="Повернуть фигуру" title="Повернуть на 45°" disabled={pending} onClick={() => action('rotate')}><RotateCw size={19}/></button>
     <div className="token-menu-toolbar" role="toolbar" aria-label="Действия с фигурой">
       <button aria-label={token.locked ? 'Разблокировать фигуру' : 'Заблокировать фигуру'} title={token.locked ? 'Разблокировать' : 'Заблокировать'} aria-pressed={!!token.locked} disabled={pending} onClick={() => action('lock')}>{token.locked ? <Lock size={18}/> : <LockOpen size={18}/>}</button>

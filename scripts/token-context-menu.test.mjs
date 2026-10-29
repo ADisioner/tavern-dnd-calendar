@@ -20,7 +20,7 @@ function menu(options = {}) {
     if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
     if (name.includes('/conditions')) return conditions;
     return new Proxy({}, { get: (_target, key) => key });
-  }, document: { addEventListener: (name, handler) => listeners.set(name, handler), removeEventListener() {} } });
+  }, document: { addEventListener: (name, handler) => listeners.set(name, handler), removeEventListener() {} }, window: { addEventListener: (name, handler) => listeners.set(name, handler), removeEventListener() {} } });
   let props = { token: { id: 'one', name: 'Hero', size: 1 }, pending: false, radius: 32, position: { x: 100, y: 100 }, viewport: { width: 800, height: 600 }, onAction: (...args) => actions.push(args), ...options };
   const render = next => { props = { ...props, ...next }; cursor = 0; const tree = exports.default(props); effects.splice(0).forEach(effect => effect()); return tree; };
   const nodes = node => !node || typeof node !== 'object' ? [] : [node, ...[node.props?.children].flat(Infinity).flatMap(nodes)];
@@ -29,11 +29,36 @@ function menu(options = {}) {
 }
 test('token controls send the selected token action and pending disables every button', () => {
   const view = menu(); const tree = view.render();
-  for (const [label, action] of [['Уменьшить фигуру', 'smaller'], ['Увеличить фигуру', 'larger'], ['Повернуть фигуру', 'rotate'], ['Заблокировать фигуру', 'lock'], ['Создать копию', 'duplicate'], ['Удалить фигуру', 'delete']]) {
+  for (const [label, action] of [['Повернуть фигуру', 'rotate'], ['Заблокировать фигуру', 'lock'], ['Создать копию', 'duplicate'], ['Удалить фигуру', 'delete']]) {
     view.find(tree, label).props.onClick(); assert.equal(view.actions.at(-1)[1], action); assert.equal(view.actions.at(-1)[0].id, 'one');
   }
   const pending = view.render({ pending: true });
   assert.ok(view.nodes(pending).filter(node => node.type === 'button').every(node => node.props.disabled));
+});
+
+for (const side of ['слева', 'справа']) test(`resize handle ${side} grows right, shrinks left and commits once on release`, () => {
+  const previews = [], view = menu({ resizePixelsPerCell: 80, onResizePreview: value => previews.push(value) });
+  const handle = view.find(view.render(), `Изменить размер ${side}`);
+  assert.ok(handle);
+  const evt = x => ({ button: 0, pointerId: 1, clientX: x, preventDefault() {}, stopPropagation() {}, currentTarget: { setPointerCapture() {}, releasePointerCapture() {} } });
+  handle.props.onPointerDown(evt(100));
+  handle.props.onPointerMove(evt(140)); assert.equal(previews.at(-1), 1.5);
+  handle.props.onPointerMove(evt(60)); assert.equal(previews.at(-1), 0.5);
+  assert.equal(view.actions.length, 0);
+  handle.props.onPointerUp(evt(120));
+  assert.equal(view.actions.length, 1); assert.equal(view.actions[0][1], 'resize'); assert.equal(view.actions[0][2], 1.25);
+  handle.props.onLostPointerCapture(evt(120)); assert.equal(view.actions.length, 1);
+});
+
+test('resize clamps limits, cancels on Escape and never saves a plain press', () => {
+  const previews = [], view = menu({ resizePixelsPerCell: 80, onResizePreview: value => previews.push(value) });
+  const handle = view.find(view.render(), 'Изменить размер слева');
+  assert.ok(handle);
+  const evt = x => ({ button: 0, pointerId: 1, clientX: x, preventDefault() {}, stopPropagation() {}, currentTarget: { setPointerCapture() {}, releasePointerCapture() {} } });
+  handle.props.onPointerDown(evt(100)); handle.props.onPointerMove(evt(1000)); assert.equal(previews.at(-1), 3);
+  view.listeners.get('keydown')({ key: 'Escape' }); assert.equal(previews.at(-1), null);
+  handle.props.onPointerUp(evt(1000)); assert.equal(view.actions.length, 0);
+  handle.props.onPointerDown(evt(100)); handle.props.onPointerUp(evt(100)); assert.equal(view.actions.length, 0);
 });
 test('layer popup dispatches front/back; Escape and token change close popups', () => {
   const view = menu(); let tree = view.render();
