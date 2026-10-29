@@ -5,8 +5,8 @@ import { parseYouTubeVideoId } from '@/lib/table/youtube';
 import type { MusicState } from '@/lib/table/room';
 import type { CommandInput } from './use-table-room';
 
-export default function TableMusicPanel({ music, disabled, send, onClose }: {
-  music: MusicState; disabled: boolean;
+export default function TableMusicPanel({ music, disabled, hidden, send, onClose }: {
+  music: MusicState; disabled: boolean; hidden: boolean;
   send: (command: CommandInput) => boolean; onClose: () => void;
 }) {
   const [url, setUrl] = useState(''), [label, setLabel] = useState(''), [error, setError] = useState('');
@@ -32,12 +32,8 @@ export default function TableMusicPanel({ music, disabled, send, onClose }: {
       ? { type: 'music-pause', trackId: current.id, positionSeconds: Math.floor(position) }
       : { type: 'music-play', trackId: current.id, positionSeconds: Math.floor(position) });
   }
-  function close() {
-    if (music.playing && current) send({ type: 'music-pause', trackId: current.id, positionSeconds: Math.floor(position) });
-    onClose();
-  }
-  return <section className="table-music-panel" aria-label="Музыка стола">
-    <header><strong><Music2 size={17}/> Музыка</strong><button className="table-tool" aria-label="Закрыть музыку" onClick={close}><X size={18}/></button></header>
+  return <section id="table-music-panel" className="table-music-panel" aria-label="Музыка стола" hidden={hidden}>
+    <header><strong><Music2 size={17}/> Музыка</strong><button className="table-tool" aria-label="Скрыть окно музыки" title="Скрыть окно — музыка продолжит играть" onClick={onClose}><X size={18}/></button></header>
     {current ? <div className="table-music-player">
       <div className="table-music-track"><strong>{current.title ?? current.label ?? current.videoId}</strong><span>{music.playing ? 'Играет' : 'На паузе'}</span></div>
       <iframe key={`${current.id}:${music.playing}`} src={frameUrl} title={`YouTube: ${current.title ?? current.label ?? current.videoId}`} allow="autoplay; encrypted-media; picture-in-picture; clipboard-write" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
@@ -57,3 +53,4 @@ export default function TableMusicPanel({ music, disabled, send, onClose }: {
     </li>)}</ul>
   </section>;
 }
+
