@@ -167,10 +167,10 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
         <button className="table-tool" title="Привязка к клеткам" aria-label="Привязка к клеткам" aria-pressed={snap} onClick={() => setSnap(value => !value)}><Grid2X2 size={20}/></button>
         <button className="table-tool" title="Добавить токен" aria-label="Добавить токен" disabled={disabled} onClick={() => room.send({ type: 'add', ownerId: actor?.userId ?? null })}><Plus size={22}/></button>
         <button className="table-tool" title="Библиотека материалов" aria-label="Библиотека материалов" onClick={() => setLibraryOpen(true)}><FolderOpen size={21}/></button>
-        <button className="table-tool" title="Общая музыка" aria-label="Общая музыка" aria-pressed={musicOpen || !!room.music?.playing} onClick={() => setMusicOpen(value => !value)}><Music2 size={20}/></button>
+        <button className="table-tool" title={room.music?.playing ? 'Общая музыка — играет' : 'Общая музыка'} aria-label="Общая музыка" aria-pressed={musicOpen} aria-expanded={musicOpen} aria-controls="table-music-panel" onClick={() => setMusicOpen(value => !value)}><Music2 size={20}/></button>
         <button className="table-tool" title={panelOpen ? 'Закрыть панель стола' : 'Открыть панель стола'} aria-label={panelOpen ? 'Закрыть панель стола' : 'Открыть панель стола'} aria-pressed={panelOpen} onClick={() => setPanelOpen(value => !value)}>{panelOpen ? <PanelRightClose size={20}/> : <PanelRightOpen size={20}/>}</button>
       </aside>
-      {(musicOpen || !!room.music?.playing) && <TableMusicPanel music={room.music} disabled={disabled} send={room.send} onClose={() => setMusicOpen(false)}/>}
+      <TableMusicPanel music={room.music} disabled={disabled} hidden={!musicOpen} send={room.send} onClose={() => setMusicOpen(false)}/>
       {rulerMenuOpen && <div id="table-ruler-menu" className="table-ruler-menu" style={{ top: rulerMenuTop }} role="group" aria-label="Режим линейки">
         {([['line', 'Линейка', Ruler], ['cone', 'Конус', Cone], ['sphere', 'Сфера', Circle], ['square', 'Квадрат', Square], ['move', 'Линейка движения токена', Route]] as const).map(([mode, label, Icon]) => <button key={mode} type="button" className="table-tool" aria-label={label} title={label} aria-pressed={measureMode === mode} onClick={() => chooseMeasureMode(mode)}><Icon size={19}/></button>)}
       </div>}
@@ -204,3 +204,4 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     </div>{libraryOpen && actor && <TableLibrary campaignId={campaignId} actor={actor} version={room.libraryVersion} disabled={disabled} actionError={room.error} onClose={() => setLibraryOpen(false)} onAdd={asset => room.send({ type: 'add', ownerId: actor.userId, assetId: asset.id, name: asset.name.replace(/\.[^.]+$/, '').slice(0, 40) || 'Токен' })} onMap={asset => room.send({ type: 'map', assetId: asset.id })}/>}<footer className="table-status-bar"><span>Таверна · игровой стол</span><span>{scene ? `Сохранено в ${new Intl.DateTimeFormat('ru-RU', { timeZone: timezone, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(scene.updatedAt)}` : 'Подключение к кампании…'}</span><span>Карта · токены · общая сцена</span></footer>
   </div>;
 }
+
