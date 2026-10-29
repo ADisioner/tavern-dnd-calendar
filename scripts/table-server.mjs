@@ -8,6 +8,7 @@ import { verifyTableTicket } from '../lib/table/ticket.ts';
 import { CommandError, linkedTokens, boundedGroupPoint } from '../lib/table/scene.ts';
 import { roomCommandSchema, roomDataSchema, createRoom, migrateLegacyRoom, roomView, applyRoomCommand } from '../lib/table/room.ts';
 import { motionMessageSchema, affectedMotionTokens, MOTION_LEASE_MS, MAX_TABLE_MESSAGE_BYTES } from '../lib/table/motion.ts';
+import { getYouTubeVideoStatus } from '../lib/table/youtube.ts';
 
 const isLoopbackOrigin = value => {
   try { const url = new URL(value); return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) && url.origin === value; }
@@ -270,13 +271,22 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
           // Recheck after waiting for other commands: logout/removal must revoke writes.
           const actor = await refresh(socket); if (!actor) return;
           if (room.receipts.some(r => r.id === command.id && r.userId === actor.actor.userId)) { await snapshot(socket, room, command.id); return; }
+          let youtubeTitle;
           const commandScene = room.data.scenes.find(entry => entry.scene.id === command.sceneId)?.scene;
           if (commandScene && affectedMotionTokens(commandScene, command).some(token => {
             const lease = room.motions.get(command.sceneId + ':' + token.id);
             return lease && (lease.ending || lease.expires > Date.now());
           })) throw new CommandError('busy', 'Дождитесь окончания движения этой группы.');
           if ((command.type === 'add' || command.type === 'map') && command.assetId) await library.image(command.assetId, actor);
-          const result = applyRoomCommand(room.data, command, actor.actor, actor.roster);
+          if (command.type === 'music-add') {
+            let status;
+            try { status = await getYouTubeVideoStatus(process.env.YOUTUBE_API_KEY, command.videoId); }
+            catch (error) { throw new CommandError('unavailable', error instanceof Error ? error.message : 'Не удалось проверить видео YouTube.'); }
+            if (!status.embeddable) throw new CommandError('invalid', 'Это видео запрещено встраивать.');
+            if (status.madeForKids) throw new CommandError('invalid', 'Видео с отметкой «для детей» пока нельзя добавить в общий плеер.');
+            youtubeTitle = status.title;
+          }
+          const result = applyRoomCommand(room.data, command, actor.actor, actor.roster, { youtubeTitle });
           if (command.type === 'scene-view') { actor.previewSceneId = result.viewSceneId; invalidateMotions(room); await snapshot(socket, room, command.id); return; }
           const receipts = [...room.receipts, { id: command.id, userId: actor.actor.userId }].slice(-1000);
           try { await save({ ...room, data: result.data, receipts }); }

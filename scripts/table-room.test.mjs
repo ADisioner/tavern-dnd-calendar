@@ -4,7 +4,7 @@ import { createRoom, migrateLegacyRoom, applyRoomCommand, roomCommandSchema, roo
 const campaign = crypto.randomUUID(), gm = { userId: crypto.randomUUID(), name: 'GM', role: 'master' }, player = { userId: crypto.randomUUID(), name: 'Player', role: 'player' };
 const roster = [gm, player];
 const command = (data, type, fields = {}) => roomCommandSchema.parse({ id: crypto.randomUUID(), sceneId: data.activeSceneId, baseRevision: data.scenes.find(entry => entry.scene.id === data.activeSceneId).scene.revision,
-  type, ...(type.startsWith('scene-') ? { expectedRoomRevision: data.revision } : {}), ...fields });
+  type, ...(type.startsWith('scene-') || type.startsWith('music-') ? { expectedRoomRevision: data.revision } : {}), ...fields });
 const apply = (data, type, fields = {}, actor = gm) => applyRoomCommand(data, command(data, type, fields), actor, roster);
 const fails = (fn, code) => assert.throws(fn, error => error.code === code);
 
@@ -94,4 +94,29 @@ test('room schema rejects foreign campaign scenes, duplicate IDs and invalid act
   assert.equal(roomDataSchema.safeParse({ ...data, scenes: [data.scenes[0], data.scenes[0]] }).success, false);
   assert.equal(roomDataSchema.safeParse({ ...data, scenes: [{ ...data.scenes[0], archived: true }] }).success, false);
   assert.equal(roomDataSchema.safeParse({ ...data, scenes: [{ ...data.scenes[0], scene: { ...data.scenes[0].scene, campaignId: crypto.randomUUID() } }] }).success, false);
+});
+
+test('all table participants share and persist a music playlist and synchronized playback state', () => {
+  let data = createRoom(campaign, roster);
+  assert.deepEqual(data.music, { tracks: [], currentTrackId: null, playing: false, positionSeconds: 0, startedAt: null });
+  const addedByPlayer = command(data, 'music-add', { label: 'Боевая музыка', videoId: 'dQw4w9WgXcQ' });
+  data = applyRoomCommand(data, addedByPlayer, player, roster, { youtubeTitle: 'Never Gonna Give You Up' }).data;
+  const track = data.music.tracks[0];
+  assert.equal(track.id, addedByPlayer.id); assert.equal(track.label, 'Боевая музыка'); assert.equal(track.addedById, player.userId);
+  assert.equal(track.title, 'Never Gonna Give You Up');
+  const autoTitleCommand = command(data, 'music-add', { videoId: 'FC1pMjDdjng' });
+  data = applyRoomCommand(data, autoTitleCommand, player, roster, { youtubeTitle: "maybe I wasn't ready to go home..." }).data;
+  assert.equal(data.music.tracks[1].title, "maybe I wasn't ready to go home...");
+  assert.equal(data.music.tracks[1].label, undefined);
+  assert.equal(roomView(data, gm).music.tracks.length, 2); assert.equal(roomView(data, player).music.tracks.length, 2);
+  data = apply(data, 'music-add', { label: 'Спокойная', videoId: 'M7lc1UVf-VE' }).data;
+  data = apply(data, 'music-select', { trackId: track.id }).data;
+  assert.equal(data.music.currentTrackId, track.id); assert.equal(data.music.playing, false);
+  data = apply(data, 'music-play', { trackId: track.id, positionSeconds: 12 }, player).data;
+  assert.equal(data.music.playing, true); assert.equal(data.music.positionSeconds, 12); assert.ok(data.music.startedAt);
+  data = apply(data, 'music-pause', { trackId: track.id, positionSeconds: 27 }, player).data;
+  assert.equal(data.music.playing, false); assert.equal(data.music.positionSeconds, 27); assert.equal(data.music.startedAt, null);
+  data = apply(data, 'music-remove', { trackId: track.id }, player).data;
+  assert.equal(data.music.tracks.length, 2); assert.equal(data.music.currentTrackId, null);
+  assert.equal(roomDataSchema.parse({ ...data, music: undefined }).music.tracks.length, 0);
 });

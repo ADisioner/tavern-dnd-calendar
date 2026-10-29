@@ -10,8 +10,10 @@ export type TokenActionHandler = (token: TableToken, action: TokenAction, value?
 export function tokenMenuPlacement(point: Point, radius: number, viewport: { width: number; height: number }) {
   const r = Math.max(24, Math.min(radius, viewport.width / 2 - 54, viewport.height / 2 - 70));
   const side = Math.max(142, r + 52);
+  const maxScale = Math.max(0.35, (viewport.width - 24) / 141);
   return { x: Math.max(Math.min(side, viewport.width / 2), Math.min(viewport.width - side, point.x)),
-    y: Math.max(Math.max(88, r + 52), Math.min(viewport.height - r - 68, point.y)), radius: r };
+    y: Math.max(Math.max(88, r + 52), Math.min(viewport.height - r - 68, point.y)), radius: r,
+    scale: Math.max(0.35, Math.min(0.675, r / 64, maxScale)) };
 }
 export default function TokenContextMenu({ token, pending, radius, position, viewport, onAction, menuRef, resizePixelsPerCell = 80, onResizePreview }: {
   token: TableToken; pending: boolean; radius: number; position: Point; viewport: { width: number; height: number };
@@ -68,9 +70,9 @@ export default function TokenContextMenu({ token, pending, radius, position, vie
     onKeyDown={event => { if (pending || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); event.stopPropagation();
       action('resize', event.key === 'Home' ? 0.5 : event.key === 'End' ? 3 : Math.max(0.5, Math.min(3, Math.round((token.size + (event.key === 'ArrowRight' ? 0.1 : -0.1)) * 100) / 100))); }}><MoveHorizontal size={19}/></button>;
   return <div ref={rootRef} data-token-menu className="token-context-menu" role="group" aria-label={`Действия: ${token.name}`}
-    style={{ left: point.x, top: point.y, '--token-menu-radius': `${point.radius}px` } as CSSProperties}
+    style={{ left: point.x, top: point.y, '--token-menu-radius': `${point.radius}px`, '--token-menu-scale': point.scale } as CSSProperties}
     onMouseDown={stop} onPointerDown={stop} onTouchStart={stop} onClick={stop} onDoubleClick={stop} onWheel={stop} onContextMenu={event => { stop(event); event.preventDefault(); }}
-    onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}>
+    onKeyDown={event => { if (event.key !== 'Escape' && !((event.ctrlKey || event.metaKey) && ['c', 'v'].includes(event.key.toLowerCase()))) event.stopPropagation(); }}>
     {resizeHandle('слева', 'token-menu-smaller')}
     {resizeHandle('справа', 'token-menu-larger')}
     <button className="token-menu-rotate" aria-label="Повернуть фигуру" title="Повернуть на 45°" disabled={pending} onClick={() => action('rotate')}><RotateCw size={19}/></button>

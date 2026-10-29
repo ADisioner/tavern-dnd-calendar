@@ -89,7 +89,7 @@ test('players cannot change the grid, map or run the benchmark', () => {
   const scene = createPrototypeScene(crypto.randomUUID(), roster);
   const token = scene.tokens[0];
   const commands = [
-    { id: commandId(), baseRevision: 0, type: 'grid', gridSize: 40, gridVisible: false },
+    { id: commandId(), baseRevision: 0, type: 'grid', gridSize: 40, gridVisible: false, gridColor: '#ffffff', gridOpacity: 1 },
     { id: commandId(), baseRevision: 0, type: 'benchmark' },
     { id: commandId(), baseRevision: 0, type: 'map', assetId: null },
   ];
@@ -98,6 +98,23 @@ test('players cannot change the grid, map or run the benchmark', () => {
     const command = commandSchema.parse(rawCommand);
     expectCommandError(() => applyTableCommand(scene, command, playerA, roster), 'forbidden');
   }
+});
+
+test('grid color and opacity are validated, persisted on scenes and default for older scenes', () => {
+  const scene = createPrototypeScene(crypto.randomUUID(), roster);
+  assert.equal(scene.gridColor, '#decea1');
+  assert.equal(scene.gridOpacity, 0.18);
+  const command = commandSchema.parse({ id: commandId(), baseRevision: 0, type: 'grid', gridSize: 60,
+    gridVisible: true, gridColor: '#336699', gridOpacity: 0.42 });
+  const updated = applyTableCommand(scene, command, master, roster);
+  assert.equal(updated.gridColor, '#336699');
+  assert.equal(updated.gridOpacity, 0.42);
+  assert.equal(updated.gridSize, 60);
+  const legacy = { ...scene }; delete legacy.gridColor; delete legacy.gridOpacity;
+  assert.equal(sceneSchema.parse(legacy).gridColor, '#decea1');
+  assert.equal(sceneSchema.parse(legacy).gridOpacity, 0.18);
+  assert.equal(commandSchema.safeParse({ ...command, gridColor: 'red' }).success, false);
+  assert.equal(commandSchema.safeParse({ ...command, gridOpacity: 1.5 }).success, false);
 });
 
 test('players can edit any token while owner validation remains enforced', () => {

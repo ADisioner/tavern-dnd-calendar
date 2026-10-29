@@ -18,7 +18,9 @@ export function snapMeasurePoint(point: Point, gridSize: number): Point {
 
 export function distanceFeet(from: Point, to: Point, gridSize: number): number {
   const a = snapMeasurePoint(from, gridSize), b = snapMeasurePoint(to, gridSize);
-  return Number((Math.hypot(b.x - a.x, b.y - a.y) / gridSize * 5).toFixed(1));
+  const cellsX = Math.abs(b.x - a.x) / gridSize;
+  const cellsY = Math.abs(b.y - a.y) / gridSize;
+  return Math.max(cellsX, cellsY) * 5;
 }
 
 export function areaPoints(mode: AreaMode, from: Point, to: Point, gridSize: number): Point[] {

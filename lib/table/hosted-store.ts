@@ -2,7 +2,7 @@ import { tableRole } from '../campaign-roles.ts';
 import { z } from 'zod';
 import { roomDataSchema, createRoom, type TableRoomData } from './room.ts';
 import { CommandError, type TableActor, type TableMember } from './scene.ts';
-export type HostedEnv = { DB?: D1Database; BUCKET?: R2Bucket };
+export type HostedEnv = { DB?: D1Database; BUCKET?: R2Bucket; YOUTUBE_API_KEY?: string };
 export type HostedActor = { actor: TableActor; roster: TableMember[]; campaignId: string; sessionHash: string; user: { id: string; name: string; login: string; role: string }; campaign: { id: string; name: string } };
 export type StoredRoom = { data: TableRoomData; receipts: { id: string; userId: string }[] };
 const authorizationCache = new Map<string, { at: number; value: HostedActor }>();

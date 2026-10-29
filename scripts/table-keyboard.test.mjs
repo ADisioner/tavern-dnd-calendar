@@ -22,7 +22,7 @@ function keyboard(overrides = {}, { editing = false, dialog = false } = {}) {
   });
   exports.useTokenKeyboard(state); const cleanups = effects.map(fn => fn());
   let prevented = false;
-  const press = changes => handlers.get('keydown')({ code: 'Delete', target: new Element(), preventDefault() { prevented = true; }, ...changes });
+  const press = changes => { prevented = false; handlers.get('keydown')({ code: 'Delete', target: new Element(), preventDefault() { prevented = true; }, ...changes }); return prevented; };
   return { press, removed, prevented: () => prevented, cleanup: () => cleanups.forEach(fn => fn?.()) };
 }
 
@@ -42,4 +42,21 @@ for (const [label, state, environment, event] of [
   ['modified shortcut', {}, {}, { ctrlKey: true }], ['Backspace', {}, {}, { code: 'Backspace' }],
 ]) test(`Delete does not remove tokens in ${label}`, () => {
   const view = keyboard(state, environment); try { view.press(event); assert.deepEqual(view.removed, []); } finally { view.cleanup(); }
+});
+
+test('Ctrl+C copies the selected token and Ctrl+V creates a copy on the scene', () => {
+  const pasted = [], view = keyboard({ duplicateToken: token => pasted.push([token.id, token.version]) });
+  try {
+    assert.equal(view.press({ code: 'KeyC', ctrlKey: true }), true);
+    assert.deepEqual(pasted, []);
+    assert.equal(view.press({ code: 'KeyV', ctrlKey: true }), true);
+    assert.deepEqual(pasted, [['selected', 3]]);
+  } finally { view.cleanup(); }
+});
+
+test('copy and paste shortcuts leave editors, dialogs and empty clipboard to the browser', () => {
+  const pasteInEditor = keyboard({ duplicateToken() {} }, { editing: true });
+  try { assert.equal(pasteInEditor.press({ code: 'KeyV', ctrlKey: true }), false); } finally { pasteInEditor.cleanup(); }
+  const pasteEmpty = keyboard({ duplicateToken() {} });
+  try { assert.equal(pasteEmpty.press({ code: 'KeyV', ctrlKey: true }), false); } finally { pasteEmpty.cleanup(); }
 });

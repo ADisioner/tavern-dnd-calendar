@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sceneSchema, tokenSchema, linkedTokens, type TableToken, type TableScene, type TableActor, type TableMember } from '@/lib/table/scene';
-import { sceneSummarySchema, type SceneSummary, type RoomCommand } from '@/lib/table/room';
+import { sceneSummarySchema, musicStateSchema, type SceneSummary, type RoomCommand, type MusicState } from '@/lib/table/room';
 import { MotionStore, MOTION_INTERVAL, type MotionPoint } from '@/lib/table/motion';
 import { HostedConnection, type RoomTransport } from './hosted-connection';
 
@@ -15,6 +15,7 @@ export function useTableRoom(campaignId: string) {
   const [scene, setScene] = useState<TableScene | null>(null);
   const [peers, setPeers] = useState<TableActor[]>([]);
   const [scenes, setScenes] = useState<SceneSummary[]>([]), [activeSceneId, setActiveSceneId] = useState('');
+  const [music, setMusic] = useState<MusicState>({ tracks: [], currentTrackId: null, playing: false, positionSeconds: 0, startedAt: null });
   const roomRevisionRef = useRef(0);
   const [connection, setConnection] = useState<'connecting' | 'connected' | 'offline'>('connecting');
   const [error, setError] = useState('');
@@ -61,6 +62,7 @@ export function useTableRoom(campaignId: string) {
               if (!joined) { joined = true; setError(''); }
               const received = sceneSchema.parse(message.scene);
               const summaries = sceneSummarySchema.array().parse(message.scenes);
+              setMusic(musicStateSchema.parse(message.music ?? { tracks: [], currentTrackId: null, playing: false, positionSeconds: 0, startedAt: null }));
               setScenes(summaries); setActiveSceneId(message.activeSceneId); roomRevisionRef.current = message.roomRevision;
               if (sceneRef.current?.id !== received.id) { pendingRef.current = null; setPending(false); setOptimistic(null); resetMotions(); }
               if (message.commandId && localMotions.current.has(message.commandId)) { const motion = localMotions.current.get(message.commandId)!; clearTimeout(motion.timeout); localMotions.current.delete(message.commandId); motionStore.cancelMotion(motion.motionId); setMotionPending(localMotions.current.size > 0); }
@@ -185,9 +187,9 @@ export function useTableRoom(campaignId: string) {
     const id = crypto.randomUUID(); pendingRef.current = id; setPending(true); setError('');
     if (input.type === 'move') setOptimistic({ tokenId: input.tokenId, x: input.x, y: input.y });
     socket.send(JSON.stringify({ type: 'command', command: { ...input, id, baseRevision: current.revision, sceneId: current.id,
-      ...(input.type.startsWith('scene-') ? { expectedRoomRevision: roomRevisionRef.current } : {}) } }));
+      ...(input.type.startsWith('scene-') || input.type.startsWith('music-') ? { expectedRoomRevision: roomRevisionRef.current } : {}) } }));
     return true;
   }, []);
-  return { bootstrap, scene, scenes, activeSceneId, peers, connection, error, entryError, pending, optimistic, send, libraryVersion, motionStore, motionPending, startMotion, previewMotion, endMotion,
+  return { bootstrap, scene, scenes, activeSceneId, peers, music, connection, error, entryError, pending, optimistic, send, libraryVersion, motionStore, motionPending, startMotion, previewMotion, endMotion,
     clearError: () => setError(''), reconnect: () => setRetry(value => value + 1) };
 }

@@ -12,7 +12,7 @@ import * as motion from '../lib/table/motion.ts';
 
 // Render the actual canvas handlers without a browser or GPU.
 function canvas(tool = 'select', options = {}) {
-  const effects = [], refs = [], listeners = new Map(), previews = [], ended = [], drawings = [], erased = [], selections = [];
+  const effects = [], refs = [], listeners = new Map(), previews = [], ended = [], starts = [], motionPreviews = [], drawings = [], erased = [], selections = [];
   let refCursor = 0, stateCursor = 0; const states = [];
   const jsx = (type, props) => ({ type, props });
   const react = {
@@ -40,13 +40,13 @@ function canvas(tool = 'select', options = {}) {
   const scene = { tokens: [token], drawings: [], width: 800, height: 600, gridSize: 80, ...options.scene };
   const props = { scene, actor: {}, tool, snap: true, pending: false,
     onSelect: (id, additive) => previews.push(['select', id, additive]), motionStore: { position: (_id, point) => point },
-    onMotionStart: () => true, onMotionPreview: (_token, point) => previews.push(['move', point]), onMotionEnd: id => ended.push(id),
+    onMotionStart: token => { starts.push(token.id); return true; }, onMotionPreview: (token, point) => { motionPreviews.push([token.id, point]); previews.push(['move', point]); }, onMotionEnd: id => ended.push(id),
     onDraw: drawing => drawings.push(drawing), onErase: id => erased.push(id), onSelectMany: (ids, additive) => selections.push([ids, additive]), measureMode: 'line', ...options, scene };
   const tree = exports.default(props);
   const stage = tree.props.children[0];
   const nodes = node => !node || typeof node !== 'object' ? [] : [node, ...[node.props?.children].flat(Infinity).flatMap(nodes)];
   const group = nodes(stage).find(node => node.type === 'Group' && node.props.id === 'one');
-  return { tree, stage, group, refs, effects, listeners, previews, ended, drawings, erased, selections, nodes,
+  return { tree, stage, group, refs, effects, listeners, previews, ended, starts, motionPreviews, drawings, erased, selections, nodes,
     rerender: next => { refCursor = 0; stateCursor = 0; return exports.default({ ...props, ...next }); } };
 }
 
@@ -172,6 +172,24 @@ test('Shift click toggles selection and dragging a selected token preserves the 
   assert.deepEqual(view.previews, [['select', 'one', true]]);
   view.group.props.onDragStart({ target: {}, evt: {} });
   assert.equal(view.previews.length, 1);
+});
+test('dragging a multi-selection starts and previews every selected token with the same offset', () => {
+  const two = { id: 'two', x: 120, y: 40, size: 1, name: 'Second' };
+  const view = canvas('select', { scene: { tokens: [{ id: 'one', x: 40, y: 40, size: 1, name: 'Hero' }, two] }, selectedIds: ['one', 'two'] });
+  const dragged = { px: 40, py: 40, x() { return this.px; }, y() { return this.py; }, stopDrag() {}, position(point) { this.px = point.x; this.py = point.y; } };
+  view.group.props.onDragStart({ target: dragged, evt: {} });
+  assert.deepEqual(view.starts, ['one', 'two']);
+  dragged.px = 80; dragged.py = 80;
+  view.group.props.onDragMove({ target: dragged });
+  assert.deepEqual(view.motionPreviews.map(([id, point]) => [id, point.x, point.y]), [['one', 80, 80], ['two', 160, 80]]);
+  view.group.props.onDragEnd({ target: dragged, evt: { ctrlKey: true } });
+  assert.deepEqual(view.ended, ['one', 'two']);
+});
+test('common drag delta is clamped to keep every selected token inside the map', () => {
+  const scene = sceneModule.createPrototypeScene(crypto.randomUUID(), []);
+  const first = { ...scene.tokens[0], x: 40, y: 40 }, second = { ...scene.tokens[1], x: 1500, y: 40 };
+  scene.tokens = [first, second];
+  assert.deepEqual(sceneModule.boundedSelectionPoint?.(scene, [first, second], first, { x: 200, y: 40 }), { x: 100, y: 40 });
 });
 for (const tool of ['draw', 'erase', 'pan']) test(`${tool} cannot select or start token motion`, () => {
   const view = canvas(tool); let stopped = false;
@@ -306,7 +324,8 @@ test('movement ruler follows token drag without intercepting the existing motion
   const tree = view.rerender({});
   assert.ok(view.nodes(tree).some(node => node.type === 'Line' && node.props.name === 'movement-ruler'));
   assert.ok(view.nodes(tree).some(node => node.type === 'Text' && node.props.text === '5 ft'));
-  assert.deepEqual(view.previews.find(entry => entry[0] === 'move')[1], { x: 120, y: 40 });
+  assert.equal(view.previews.find(entry => entry[0] === 'move')[1].x, 120);
+  assert.equal(view.previews.find(entry => entry[0] === 'move')[1].y, 40);
 });
 test('native menu scrolling is available while canvas touch gestures remain isolated', () => {
   const view = canvas();

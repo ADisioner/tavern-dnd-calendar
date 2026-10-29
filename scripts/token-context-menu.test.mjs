@@ -94,6 +94,19 @@ test('large-token controls follow the circumference until viewport space is exha
   assert.ok(edge.x >= 232); assert.ok(edge.y + edge.radius + 68 <= 600);
   const narrow = view.exports.tokenMenuPlacement({ x: 180, y: 210 }, 180, { width: 360, height: 420 });
   assert.ok(narrow.radius > 80); assert.ok(narrow.x - narrow.radius - 50 >= 0); assert.ok(narrow.x + narrow.radius + 50 <= 360);
+  assert.ok(narrow.scale <= 0.675);
+});
+test('token menu controls scale with the token radius and stay inside practical limits', () => {
+  const view = menu();
+  const small = view.exports.tokenMenuPlacement({ x: 100, y: 100 }, 10, { width: 800, height: 600 });
+  const regular = view.exports.tokenMenuPlacement({ x: 100, y: 100 }, 32, { width: 800, height: 600 });
+  const large = view.exports.tokenMenuPlacement({ x: 100, y: 100 }, 200, { width: 800, height: 600 });
+  assert.ok(small.scale < regular.scale);
+  assert.ok(large.scale > regular.scale);
+  assert.ok(small.scale >= 0.35);
+  assert.ok(large.scale <= 0.675);
+  assert.equal(large.scale, 0.675);
+  assert.equal(small.scale, 0.375);
 });
 test('outside pointer closes popup and menu events cannot bubble into canvas gestures', () => {
   const view = menu(); let tree = view.render();
@@ -104,6 +117,14 @@ test('outside pointer closes popup and menu events cannot bubble into canvas ges
   for (const name of ['onMouseDown', 'onPointerDown', 'onTouchStart', 'onWheel', 'onClick']) {
     let stopped = false; tree.props[name]({ stopPropagation() { stopped = true; } }); assert.equal(stopped, true);
   }
+});
+test('copy and paste shortcuts can leave the token menu while other keys stay scoped to it', () => {
+  const view = menu(), tree = view.render();
+  let stopped = false;
+  tree.props.onKeyDown({ key: 'c', ctrlKey: true, stopPropagation() { stopped = true; } });
+  assert.equal(stopped, false);
+  tree.props.onKeyDown({ key: 'ArrowRight', stopPropagation() { stopped = true; } });
+  assert.equal(stopped, true);
 });
 test('status tab exposes all conditions and independently toggles conditions, exhaustion and clear', () => {
   const view = menu({ token: { id: 'one', name: 'Hero', size: 1, statuses: ['blinded', 'poisoned'], exhaustionLevel: 3 } });

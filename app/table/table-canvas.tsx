@@ -4,7 +4,7 @@ import { Stage, Layer, Image as CanvasImage, Line, Rect, Group, Circle, Path, Te
 import type Konva from 'konva';
 import { ZoomIn, ZoomOut, Scan } from 'lucide-react';
 import { fitCamera, zoomAt, snapCenter, screenToWorld, worldToScreen, type Camera, type Point } from '@/lib/table/geometry';
-import { boundedGroupPoint, canMoveToken, linkedTokens, type TableActor, type TableScene, type TableToken } from '@/lib/table/scene';
+import { boundedGroupPoint, boundedSelectionPoint, canMoveToken, linkedTokens, type TableActor, type TableScene, type TableToken } from '@/lib/table/scene';
 import { assetUrl } from '@/lib/table/assets';
 import { boundedPoint, type MotionStore } from '@/lib/table/motion';
 import { tokensInRect } from '@/lib/table/selection';
@@ -15,6 +15,7 @@ import { CONDITIONS } from '@/lib/table/conditions';
 type CanvasDrawing = { id: string; color: string; width: number; points: number[] };
 type MeasureGesture = { kind: 'measure'; mode: AreaMode; from: Point; to: Point; committed?: boolean };
 type CanvasGesture = { kind: 'draw'; drawing: CanvasDrawing } | { kind: 'select'; from: Point; to: Point; additive: boolean } | MeasureGesture;
+type SelectionMotion = { draggedId: string; origin: Point; members: TableToken[]; units: { token: TableToken; origin: Point }[] };
 
 function TokenPortrait({ campaignId, assetId, radius }: { campaignId: string; assetId: string; radius: number }) {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -46,6 +47,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
   const [middlePan, setMiddlePan] = useState(false);
   const previousViewport = useRef<{ width: number; height: number } | null>(null), touchRef = useRef<{ distance: number; point: Point } | null>(null);
   const tokenNodes = useRef(new Map<string, Konva.Group>()), dragging = useRef(new Set<string>()), dragStarts = useRef(new Map<string, Point>());
+  const selectionMotion = useRef<SelectionMotion | null>(null);
   const gestureRef = useRef<CanvasGesture | null>(null), cameraOverride = useRef(false), pinching = useRef(false);
   const [gesture, setGesture] = useState<CanvasGesture | null>(null);
   const [measurePreview, setMeasurePreview] = useState<MeasureGesture | null>(null);
@@ -161,13 +163,13 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     window.addEventListener('mouseup', finish); window.addEventListener('blur', finish);
     return () => { window.removeEventListener('mouseup', finish); window.removeEventListener('blur', finish); };
   }, [middlePan]);
-  useEffect(() => { cancelGesture(); updateMeasurePreview(null); setMovementPreview(null); dragStarts.current.clear(); }, [tool, measureMode, scene.id]);
+  useEffect(() => { cancelGesture(); updateMeasurePreview(null); setMovementPreview(null); dragStarts.current.clear(); selectionMotion.current = null; }, [tool, measureMode, scene.id]);
   const fit = useCallback(() => setCamera(fitCamera(scene, viewport)), [scene, viewport]);
   const zoom = (factor: number) => setCamera(current => zoomAt(current, { x: viewport.width / 2, y: viewport.height / 2 }, factor));
   const grid: React.ReactNode[] = [];
   if (scene.gridVisible) {
-    for (let x = 0; x <= scene.width; x += scene.gridSize) grid.push(<Line key={'x' + x} points={[x, 0, x, scene.height]} stroke="#decea1" opacity={0.18} strokeWidth={1 / camera.scale} listening={false}/>);
-    for (let y = 0; y <= scene.height; y += scene.gridSize) grid.push(<Line key={'y' + y} points={[0, y, scene.width, y]} stroke="#decea1" opacity={0.18} strokeWidth={1 / camera.scale} listening={false}/>);
+    for (let x = 0; x <= scene.width; x += scene.gridSize) grid.push(<Line key={'x' + x} points={[x, 0, x, scene.height]} stroke={scene.gridColor} opacity={scene.gridOpacity} strokeWidth={1 / camera.scale} listening={false}/>);
+    for (let y = 0; y <= scene.height; y += scene.gridSize) grid.push(<Line key={'y' + y} points={[0, y, scene.width, y]} stroke={scene.gridColor} opacity={scene.gridOpacity} strokeWidth={1 / camera.scale} listening={false}/>);
   }
   const panning = tool === 'pan' || space || middlePan;
   const activeMeasure = gesture?.kind === 'measure' ? gesture : measurePreview;
@@ -201,6 +203,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         const point = tokenMenuPlacement(worldToScreen(displayed, camera), previewToken(primary).size * scene.gridSize * 0.42 * camera.scale, viewport);
         menuRef.current.style.left = `${point.x}px`; menuRef.current.style.top = `${point.y}px`;
         menuRef.current.style.setProperty('--token-menu-radius', `${point.radius}px`);
+        menuRef.current.style.setProperty('--token-menu-scale', String(point.scale));
         const track = motionStore.tracks.get(primary.id);
         menuRef.current.style.visibility = cameraActive() || dragging.current.size > 0 || (!!track && !track.finished) ? 'hidden' : '';
       }
@@ -261,9 +264,46 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         const displayed = resizePreview?.id === token.id ? boundedPoint(token, scene.gridSize, token) : motionStore.position(token.id, token);
         return <Group ref={node => { if (node) tokenNodes.current.set(token.id, node); else tokenNodes.current.delete(token.id); }} key={token.id} id={token.id} x={displayed.x} y={displayed.y} listening={tool === 'select' || panning} draggable={allowed && tool === 'select' && !panning && !pending}
           onClick={event => { event.cancelBubble = true; if (tool === 'select' && !cameraActive() && event.evt.button !== 1) onSelect(token.id, event.evt.shiftKey); }} onTap={() => { if (tool === 'select' && !cameraActive()) onSelect(token.id); }}
-          onDragStart={event => { event.cancelBubble = true; if (!allowed || tool !== 'select' || cameraActive() || pending) { event.target.stopDrag(); return; } if (!selected) onSelect(token.id, event.evt?.shiftKey); if (onMotionStart(token)) { dragging.current.add(token.id); if (measureMode === 'move') { const from = { x: event.target.x(), y: event.target.y() }; dragStarts.current.set(token.id, from); setMovementPreview({ tokenId: token.id, from, to: from }); } } else { event.target.stopDrag(); event.target.position({ x: token.x, y: token.y }); } }}
-          onDragMove={event => { event.cancelBubble = true; if (!dragging.current.has(token.id)) return; const point = boundedGroupPoint(scene, token, { x: event.target.x(), y: event.target.y() }); event.target.position(point); onMotionPreview(token, point); const from = dragStarts.current.get(token.id); if (measureMode === 'move' && from) setMovementPreview({ tokenId: token.id, from, to: point }); }}
-          onDragEnd={event => { event.cancelBubble = true; if (!dragging.current.delete(token.id)) return; const point = boundedGroupPoint(scene, token, snapCenter({ x: event.target.x(), y: event.target.y() }, scene.gridSize, snap && !event.evt?.ctrlKey && !event.evt?.altKey)); onMotionPreview(token, point, 85); onMotionEnd(token.id); dragStarts.current.delete(token.id); setMovementPreview(null); }}>
+          onDragStart={event => {
+            event.cancelBubble = true;
+            if (!allowed || tool !== 'select' || cameraActive() || pending) { event.target.stopDrag(); return; }
+            if (!selected) onSelect(token.id, event.evt?.shiftKey);
+            const chosen = selected ? scene.tokens.filter(value => selectedSet.has(value.id)) : [token];
+            const members = [...new Map(chosen.flatMap(value => linkedTokens(scene, value)).map(value => [value.id, value])).values()];
+            const units = [...new Map(chosen.map(value => linkedTokens(scene, value)[0]).map(value => [value.id, value])).values()];
+            if (members.some(value => !movable(value))) { event.target.stopDrag(); return; }
+            const started: TableToken[] = [];
+            for (const unit of units) {
+              if (!onMotionStart(unit)) { for (const active of started) onMotionEnd(active.id); event.target.stopDrag(); event.target.position({ x: token.x, y: token.y }); return; }
+              started.push(unit);
+            }
+            const origin = motionStore.position(token.id, token);
+            selectionMotion.current = { draggedId: token.id, origin, members, units: units.map(unit => ({ token: unit, origin: motionStore.position(unit.id, unit) })) };
+            dragging.current.add(token.id);
+            if (measureMode === 'move') { dragStarts.current.set(token.id, origin); setMovementPreview({ tokenId: token.id, from: origin, to: origin }); }
+          }}
+          onDragMove={event => {
+            event.cancelBubble = true;
+            const active = selectionMotion.current;
+            if (!dragging.current.has(token.id) || !active || active.draggedId !== token.id) return;
+            const point = boundedSelectionPoint(scene, active.members, token, { x: event.target.x(), y: event.target.y() });
+            event.target.position(point);
+            const dx = point.x - active.origin.x, dy = point.y - active.origin.y;
+            for (const unit of active.units) onMotionPreview(unit.token, { x: unit.origin.x + dx, y: unit.origin.y + dy });
+            const from = dragStarts.current.get(token.id);
+            if (measureMode === 'move' && from) setMovementPreview({ tokenId: token.id, from, to: point });
+          }}
+          onDragEnd={event => {
+            event.cancelBubble = true;
+            if (!dragging.current.delete(token.id)) return;
+            const active = selectionMotion.current;
+            if (!active || active.draggedId !== token.id) return;
+            const desired = snapCenter({ x: event.target.x(), y: event.target.y() }, scene.gridSize, snap && !event.evt?.ctrlKey && !event.evt?.altKey);
+            const point = boundedSelectionPoint(scene, active.members, token, desired);
+            const dx = point.x - active.origin.x, dy = point.y - active.origin.y;
+            for (const unit of active.units) { onMotionPreview(unit.token, { x: unit.origin.x + dx, y: unit.origin.y + dy }, 85); onMotionEnd(unit.token.id); }
+            selectionMotion.current = null; dragStarts.current.delete(token.id); setMovementPreview(null);
+          }}>
           <Circle name="motion-indicator" visible={false} radius={radius + 6} stroke="#87b2c2" strokeWidth={3 / camera.scale} listening={false}/>
           <Text name="motion-label" visible={false} text="" x={-80} y={-radius - 27} width={160} align="center" fontSize={13} fill="#b7deeb" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>
           {selected && <Circle radius={radius + 7} stroke="#efd18b" strokeWidth={2.5 / camera.scale} dash={[7 / camera.scale, 4 / camera.scale]} listening={false}/>}

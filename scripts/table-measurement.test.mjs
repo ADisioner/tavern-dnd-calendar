@@ -9,9 +9,10 @@ test('measurement points snap to world-space grid cell centers', () => {
   assert.deepEqual(snapMeasurePoint({ x: 40, y: 40 }, 80), { x: 40, y: 40 });
 });
 
-test('each grid square represents five feet, including geometric diagonal distance', () => {
-  closeTo(distanceFeet({ x: 40, y: 40 }, { x: 120, y: 40 }, 80), 5);
-  closeTo(distanceFeet({ x: 40, y: 40 }, { x: 120, y: 120 }, 80), 7.1);
+test('each crossed grid cell represents five feet regardless of point position', () => {
+  closeTo(distanceFeet({ x: 4, y: 4 }, { x: 75, y: 75 }, 80), 0);
+  closeTo(distanceFeet({ x: 4, y: 4 }, { x: 84, y: 84 }, 80), 5);
+  closeTo(distanceFeet({ x: 4, y: 4 }, { x: 279, y: 199 }, 80), 15);
 });
 
 test('line and square measurements align to grid cells', () => {

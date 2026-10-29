@@ -6,14 +6,14 @@ import ts from 'typescript';
 import * as sceneModel from '../lib/table/scene.ts';
 import * as conditions from '../lib/table/conditions.ts';
 
-function app() {
+function app(role = 'player') {
   const tokens = [
     { id: 'a', name: 'First', version: 2, size: 1, x: 40, y: 40 },
     { id: 'b', name: 'Second', version: 4, size: 1, x: 120, y: 40, groupId: 'group' },
     { id: 'c', name: 'Third', version: 5, size: 1, x: 200, y: 40, groupId: 'group' },
   ];
-  const scene = { id: 'scene', tokens, gridSize: 80, updatedAt: 0 }, sent = [], state = [];
-  const room = { scene, bootstrap: { actor: { role: 'player' }, campaign: { name: 'Party' }, roster: [] },
+  const scene = { id: 'scene', tokens, gridSize: 80, gridVisible: true, gridColor: '#decea1', gridOpacity: 0.18, updatedAt: 0 }, sent = [], state = [];
+  const room = { scene, bootstrap: { actor: { role }, campaign: { name: 'Party' }, roster: [] },
     connection: 'connected', pending: false, scenes: [], peers: [], send: command => { sent.push(command); return true; } };
   let cursor = 0, keyboard;
   const exports = {};
@@ -32,7 +32,7 @@ function app() {
     if (name.endsWith('/scene')) return sceneModel;
     if (name.endsWith('/conditions')) return conditions;
     return {};
-  } });
+  }, FormData: class TestFormData { constructor(form) { this.form = form; } get(key) { return this.form.values?.[key] ?? null; } } });
   function render() { cursor = 0; return exports.default({ campaignId: 'campaign' }); }
   function nodes(tree) { return !tree || typeof tree !== 'object' ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...nodes(tree.props?.children)]; }
   const canvas = () => nodes(render()).find(node => node.type === 'Canvas').props;
@@ -66,6 +66,20 @@ test('ordinary participants see token edit form and an explicit delete action', 
   remove.props.onClick(); assert.equal(view.sent[0].type, 'remove'); assert.equal(view.sent[0].tokenId, 'a');
 });
 
+test('master can configure grid color and opacity and submits both with the scene grid settings', () => {
+  const view = app('master');
+  view.nodes(view.render()).find(node => node.type === 'button' && node.props?.['aria-label'] === 'Открыть панель стола').props.onClick();
+  const nodes = view.nodes(view.render());
+  const color = nodes.find(node => node.type === 'input' && node.props.name === 'gridColor');
+  const opacity = nodes.find(node => node.type === 'input' && node.props.name === 'gridOpacity');
+  assert.equal(color.props.type, 'color'); assert.equal(color.props.defaultValue, '#decea1');
+  assert.equal(opacity.props.type, 'range'); assert.equal(opacity.props.defaultValue, 18);
+  const form = nodes.find(node => node.type === 'form' && node.props.onSubmit);
+  form.props.onSubmit({ preventDefault() {}, currentTarget: { values: { gridSize: '60', gridVisible: 'yes', gridColor: '#336699', gridOpacity: '42' } } });
+  assert.equal(view.sent[0].type, 'grid'); assert.equal(view.sent[0].gridSize, 60); assert.equal(view.sent[0].gridVisible, true);
+  assert.equal(view.sent[0].gridColor, '#336699'); assert.equal(view.sent[0].gridOpacity, 0.42);
+});
+
 test('selection follows a remotely merged group and Shift can still deselect the whole group', () => {
   const view = app(); view.canvas().onSelect('a');
   view.tokens[0].groupId = 'group';
@@ -96,6 +110,15 @@ test('token menu copy and delete target the primary token only', () => {
   view.canvas().onTokenAction?.(view.tokens[0], 'duplicate');
   view.canvas().onTokenAction?.(view.tokens[0], 'delete');
   assert.deepEqual(Array.from(view.sent, value => [value.type, value.tokenId, value.expectedVersion]), [['duplicate', 'a', 2], ['remove', 'a', 2]]);
+});
+
+test('keyboard copy-paste duplicates the selected token through the shared scene command', () => {
+  const view = app();
+  view.render();
+  view.keyboard().duplicateToken(view.tokens[0]);
+  assert.equal(view.sent[0].type, 'duplicate');
+  assert.equal(view.sent[0].tokenId, 'a');
+  assert.equal(view.sent[0].expectedVersion, 2);
 });
 
 test('the inspector can preserve a fractional size from dragging when editing other properties', () => {
@@ -139,13 +162,30 @@ test('compact toolbar keeps the inspector closed, opens it on demand and selects
   assert.ok(nodes.some(node => node.props?.className === 'table-inspector'));
   nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Закрыть панель стола').props.onClick();
   nodes = view.nodes(view.render()); assert.equal(nodes.some(node => node.props?.className === 'table-inspector'), false);
-  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка и AoE').props.onClick();
+  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка и AoE').props.onClick({ currentTarget: { getBoundingClientRect: () => ({ top: 300, height: 42 }), closest: () => ({ getBoundingClientRect: () => ({ top: 100, height: 600 }) }) } });
   nodes = view.nodes(view.render());
   nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Сфера').props.onClick();
   assert.equal(view.canvas().tool, 'measure'); assert.equal(view.canvas().measureMode, 'sphere');
   nodes = view.nodes(view.render());
-  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка и AoE').props.onClick();
+  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка и AoE').props.onClick({ currentTarget: { getBoundingClientRect: () => ({ top: 300, height: 42 }), closest: () => ({ getBoundingClientRect: () => ({ top: 100, height: 600 }) }) } });
   nodes = view.nodes(view.render());
   nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка движения токена').props.onClick();
   assert.equal(view.canvas().tool, 'select'); assert.equal(view.canvas().measureMode, 'move');
+});
+
+test('ruler button activates the line and its menu escapes the clipping toolbar', () => {
+  const view = app();
+  const tree = view.nodes(view.render());
+  const ruler = tree.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка и AoE');
+  ruler.props.onClick({ currentTarget: {
+    getBoundingClientRect: () => ({ top: 300, height: 42 }),
+    closest: selector => selector === '.table-main' ? { getBoundingClientRect: () => ({ top: 100, height: 600 }) } : null,
+  } });
+  const afterClick = view.nodes(view.render());
+  assert.equal(view.canvas().tool, 'measure');
+  assert.equal(view.canvas().measureMode, 'line');
+  const toolbar = afterClick.find(node => node.props?.className === 'table-tools');
+  const main = afterClick.find(node => node.props?.className === 'table-main');
+  assert.equal(view.nodes(toolbar).some(node => node.props?.className === 'table-ruler-menu'), false);
+  assert.ok(view.nodes(main).some(node => node.props?.className === 'table-ruler-menu'));
 });

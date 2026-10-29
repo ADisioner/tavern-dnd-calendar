@@ -4,6 +4,7 @@ import { applyRoomCommand, roomCommandSchema, roomView, type TableRoomData } fro
 import { affectedMotionTokens, motionMessageSchema } from './motion.ts';
 import { CommandError, linkedTokens, boundedGroupPoint } from './scene.ts';
 import { hostedImage } from './hosted-library.ts';
+import { getYouTubeVideoStatus } from './youtube.ts';
 
 export type HostedClient = { id: string; campaignId: string; preview?: string; version: number; sceneId: string; generation: number; touched: number; seen: Map<string,string>; permissions?: string };
 export function hostedClient(id: string, campaignId: string, preview?: string): HostedClient {
@@ -55,6 +56,15 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
   if (message.type === 'hello') return pollHosted(env, actor, client, true);
   if (message.type === 'command') {
     const command = roomCommandSchema.parse(message.command); client.generation++;
+    let youtubeTitle: string | undefined;
+    if (command.type === 'music-add') {
+      let status;
+      try { status = await getYouTubeVideoStatus(env.YOUTUBE_API_KEY, command.videoId); }
+      catch (error) { throw new CommandError('unavailable', error instanceof Error ? error.message : 'Не удалось проверить видео YouTube.'); }
+      if (!status.embeddable) throw new CommandError('invalid', 'Это видео запрещено встраивать.');
+      if (status.madeForKids) throw new CommandError('invalid', 'Видео с отметкой «для детей» пока нельзя добавить в общий плеер.');
+      youtubeTitle = status.title;
+    }
     for (let attempt = 0; attempt < 5; attempt++) {
       const room = await readHostedRoom(env, actor);
       if (room.state.receipts.some(value => value.id === command.id && value.userId === actor.actor.userId)) return pollHosted(env, actor, client, true, command.id);
@@ -65,7 +75,7 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
         const locked = await db.prepare(`SELECT motion_id FROM test_table_motions WHERE campaign_id=? AND scene_id=? AND token_id IN (SELECT value FROM json_each(?)) AND expires>? AND status IN ('moving','committing')`).bind(client.campaignId, command.sceneId, JSON.stringify(touched), Date.now()).first();
         if (locked) throw new CommandError('busy', 'Эту группу сейчас двигает участник.');
       }
-      const result = applyRoomCommand(room.state.data, command, actor.actor, actor.roster);
+      const result = applyRoomCommand(room.state.data, command, actor.actor, actor.roster, { youtubeTitle });
       if (command.type === 'scene-view') { client.preview = result.viewSceneId; return pollHosted(env, actor, client, true, command.id); }
       const state = { data: result.data, receipts: [...room.state.receipts, { id: command.id, userId: actor.actor.userId }].slice(-1000) };
       const idleToken = touched.length ? { sceneId: command.sceneId!, tokenIds: touched } : undefined;

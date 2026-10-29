@@ -7,7 +7,7 @@ import type { MotionStore, MotionPoint } from '@/lib/table/motion';
 type KeyboardState = { scene: TableScene | null; actor: TableActor | undefined; selectedId: string | null;
   connection: string; pending: boolean; motionStore: MotionStore; startMotion: (token: TableToken) => boolean;
   previewMotion: (token: TableToken, point: MotionPoint, duration?: number) => boolean; endMotion: (tokenId: string) => void;
-  removeToken: (token: TableToken) => unknown };
+  removeToken: (token: TableToken) => unknown; duplicateToken: (token: TableToken) => unknown };
 const directions: Record<string, { x: number; y: number }> = { KeyW: { x: 0, y: -1 }, KeyA: { x: -1, y: 0 }, KeyS: { x: 0, y: 1 }, KeyD: { x: 1, y: 0 } };
 const editing = (target: EventTarget | null) => target instanceof Element && !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]');
 export function useTokenKeyboard(state: KeyboardState) {
@@ -15,7 +15,7 @@ export function useTokenKeyboard(state: KeyboardState) {
   useEffect(() => { latest.current = state; }, [state]);
   useEffect(() => {
     let held: string | null = null, lastStep = 0, timer: ReturnType<typeof setInterval> | null = null;
-    let movingToken: string | null = null, movingScene: string | null = null;
+    let movingToken: string | null = null, movingScene: string | null = null, copiedTokenId: string | null = null;
     function stop() { held = null; if (timer) clearInterval(timer); timer = null; if (movingToken) latest.current.endMotion(movingToken); movingToken = null; movingScene = null; }
     function step() {
       if (!held || Date.now() - lastStep < 160) return;
@@ -33,7 +33,23 @@ export function useTokenKeyboard(state: KeyboardState) {
       if (previewMotion(token, { x, y }, 160)) lastStep = Date.now();
     }
     function down(event: KeyboardEvent) {
-      if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) { stop(); return; }
+      if (event.altKey || event.isComposing) { stop(); return; }
+      if (event.ctrlKey || event.metaKey) {
+        stop();
+        if (event.shiftKey || document.querySelector('dialog[open]') || editing(event.target)) return;
+        const { scene, actor, selectedId, connection, pending, duplicateToken } = latest.current;
+        if (!scene || !actor || !['master', 'player'].includes(actor.role) || connection !== 'connected' || pending) return;
+        if (event.code === 'KeyC') {
+          const token = scene.tokens.find(value => value.id === selectedId);
+          if (token) { copiedTokenId = token.id; event.preventDefault(); }
+          return;
+        }
+        if (event.code === 'KeyV' && copiedTokenId) {
+          const token = scene.tokens.find(value => value.id === copiedTokenId);
+          if (token) { event.preventDefault(); duplicateToken(token); }
+        }
+        return;
+      }
       if (event.code === 'Delete') {
         if (event.repeat || event.shiftKey || document.querySelector('dialog[open]') || editing(event.target)) return;
         const { scene, actor, selectedId, connection, pending, removeToken } = latest.current;

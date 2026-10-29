@@ -29,6 +29,8 @@ export const sceneSchema = z.object({
   schemaVersion: z.literal(1), campaignId: z.string().uuid(), name: z.string().max(100),
   revision: z.number().int().nonnegative(), width: z.literal(1600), height: z.literal(1120),
   gridSize: z.number().int().min(20).max(160), gridVisible: z.boolean(),
+  gridColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#decea1'),
+  gridOpacity: z.number().min(0).max(1).default(0.18),
   tokens: z.array(tokenSchema).max(150), updatedAt: z.number().int(),
   mapAssetId: z.string().uuid().nullable().optional(),
   drawings: z.array(drawingSchema).max(300)
@@ -43,7 +45,8 @@ export const commandSchema = z.discriminatedUnion('type', [
   envelope.extend({ type: z.literal('remove'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative() }).strict(),
   envelope.extend({ type: z.literal('add'), ownerId: z.string().uuid().nullable(), assetId: z.string().uuid().optional(), name: z.string().trim().min(1).max(40).optional() }).strict(),
   envelope.extend({ type: z.literal('map'), assetId: z.string().uuid().nullable() }).strict(),
-  envelope.extend({ type: z.literal('grid'), gridSize: z.number().int().min(20).max(160), gridVisible: z.boolean() }).strict(),
+  envelope.extend({ type: z.literal('grid'), gridSize: z.number().int().min(20).max(160), gridVisible: z.boolean(),
+    gridColor: z.string().regex(/^#[0-9a-fA-F]{6}$/), gridOpacity: z.number().min(0).max(1) }).strict(),
   envelope.extend({ type: z.literal('benchmark') }).strict(),
   envelope.extend({ type: z.literal('draw'), drawing: drawingSchema }).strict(),
   envelope.extend({ type: z.literal('erase'), drawingId: z.string().uuid() }).strict(),
@@ -78,6 +81,19 @@ export function boundedGroupPoint(scene: TableScene, token: TableToken, point: P
   return { x: token.x + Math.max(minX, Math.min(maxX, point.x - token.x)),
     y: token.y + Math.max(minY, Math.min(maxY, point.y - token.y)) };
 }
+export function boundedSelectionPoint(scene: TableScene, selection: TableToken[], anchor: TableToken, point: Point): Point {
+  const members = new Map<string, TableToken>();
+  for (const token of selection.length ? selection : [anchor]) for (const member of linkedTokens(scene, token)) members.set(member.id, member);
+  let minX = -Infinity, maxX = Infinity, minY = -Infinity, maxY = Infinity;
+  for (const member of members.values()) {
+    const radius = member.size * scene.gridSize / 2;
+    minX = Math.max(minX, radius - member.x); maxX = Math.min(maxX, scene.width - radius - member.x);
+    minY = Math.max(minY, radius - member.y); maxY = Math.min(maxY, scene.height - radius - member.y);
+  }
+  const dx = Math.max(minX, Math.min(maxX, point.x - anchor.x));
+  const dy = Math.max(minY, Math.min(maxY, point.y - anchor.y));
+  return { x: anchor.x + dx, y: anchor.y + dy };
+}
 const colors = ['#a8bc8a', '#d4b276', '#87b2c2', '#b49bc9', '#c9939b'];
 function makeToken(index: number, member?: TableMember): TableToken {
   return { id: crypto.randomUUID(), name: member?.name ?? `Противник ${index + 1}`,
@@ -87,7 +103,7 @@ function makeToken(index: number, member?: TableMember): TableToken {
 }
 export function createPrototypeScene(campaignId: string, roster: TableMember[]): TableScene {
   return { id: crypto.randomUUID(), schemaVersion: 1, campaignId, name: 'Таверна у старого тракта', revision: 0,
-    width: 1600, height: 1120, gridSize: 80, gridVisible: true, updatedAt: Date.now(),
+    width: 1600, height: 1120, gridSize: 80, gridVisible: true, gridColor: '#decea1', gridOpacity: 0.18, updatedAt: Date.now(),
     tokens: Array.from({ length: Math.max(8, roster.length) }, (_, i) => makeToken(i, roster[i])), drawings: [] };
 }
 export function applyTableCommand(scene: TableScene, command: TableCommand, actor: TableActor, roster: TableMember[]): TableScene {
@@ -170,6 +186,7 @@ export function applyTableCommand(scene: TableScene, command: TableCommand, acto
       next.mapAssetId = command.assetId;
     } else if (command.type === 'grid') {
       next.gridSize = command.gridSize; next.gridVisible = command.gridVisible;
+      next.gridColor = command.gridColor; next.gridOpacity = command.gridOpacity;
     } else if (command.type === 'add') {
       if (next.tokens.length >= 150) throw new CommandError('limit', 'В прототипе доступно до 150 токенов.');
       const ownerId = actor.role === 'master' ? command.ownerId : actor.userId;
