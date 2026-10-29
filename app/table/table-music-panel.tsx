@@ -1,5 +1,5 @@
 'use client';
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { Music2, Play, Pause, Plus, Trash2, X } from 'lucide-react';
 import { parseYouTubeVideoId } from '@/lib/table/youtube';
 import type { MusicState } from '@/lib/table/room';
@@ -12,7 +12,14 @@ export default function TableMusicPanel({ music, disabled, send, onClose }: {
   const [url, setUrl] = useState(''), [label, setLabel] = useState(''), [error, setError] = useState('');
   const current = music.tracks.find(track => track.id === music.currentTrackId);
   const position = music.playing && music.startedAt !== null ? music.positionSeconds + Math.max(0, Date.now() - music.startedAt) / 1000 : music.positionSeconds;
-  const frameUrl = current ? `https://www.youtube.com/embed/${current.videoId}?enablejsapi=1&origin=${encodeURIComponent(typeof window === 'undefined' ? '' : window.location.origin)}&controls=1&playsinline=1&autoplay=${music.playing ? 1 : 0}&start=${Math.floor(position)}` : '';
+  const videoId = current?.videoId;
+  // Keep the iframe source stable during unrelated room updates. Changing start
+  // on every render navigates the iframe and interrupts playback.
+  const frameUrl = useMemo(() => {
+    if (!videoId) return '';
+    const start = music.positionSeconds + (music.playing && music.startedAt !== null ? Math.max(0, Date.now() - music.startedAt) / 1000 : 0);
+    return `https://www.youtube.com/embed/${videoId}?enablejsapi=1&origin=${encodeURIComponent(typeof window === 'undefined' ? '' : window.location.origin)}&controls=1&playsinline=1&autoplay=${music.playing ? 1 : 0}&start=${Math.floor(start)}`;
+  }, [videoId, current?.id, music.playing, music.positionSeconds, music.startedAt]);
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError('');
     const videoId = parseYouTubeVideoId(url);
