@@ -118,6 +118,12 @@ test('status menu toggles validated conditions, exhaustion level and clear witho
   assert.equal(view.sent.at(-1).exhaustionLevel, 4);
   view.canvas().onTokenAction?.(view.tokens[0], 'status', 'clear');
   assert.deepEqual([...view.sent.at(-1).statuses], []);
+  view.tokens[0].statuses = [];
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'concentration');
+  assert.deepEqual([...view.sent.at(-1).statuses], ['concentration']);
+  view.tokens[0].statuses = ['concentration'];
+  view.canvas().onTokenAction?.(view.tokens[0], 'status', 'dead');
+  assert.deepEqual([...view.sent.at(-1).statuses], ['concentration', 'dead']);
   const count = view.sent.length;
   view.canvas().onTokenAction?.(view.tokens[0], 'status', 'invalid');
   view.canvas().onTokenAction?.(view.tokens[0], 'status', 'exhaustion:9');

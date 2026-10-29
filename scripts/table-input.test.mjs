@@ -26,7 +26,7 @@ function canvas(tool = 'select', options = {}) {
   vm.runInNewContext(source, { exports, require: name => {
     if (name === 'react') return react;
     if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
-    if (name === 'react-konva') return Object.fromEntries(['Stage','Layer','Image','Line','Rect','Group','Circle','Text'].map(key => [key, key]));
+    if (name === 'react-konva') return Object.fromEntries(['Stage','Layer','Image','Line','Rect','Group','Circle','Path','Text'].map(key => [key, key]));
     if (name.includes('/geometry')) return geometry;
     if (name.includes('/selection')) return selection;
     if (name.includes('/conditions')) return conditions;
@@ -269,8 +269,10 @@ test('condition badges remain upright and show four conditions plus overflow wit
   const view = canvas('select', { scene: { tokens: [{ id: 'one', x: 80, y: 80, size: 1, name: 'Hero', rotation: 90, statuses: ['blinded', 'charmed', 'deafened', 'poisoned', 'prone'], showLabel: false }] } });
   const badges = view.nodes(view.group).find(node => node.props?.name === 'condition-badges');
   assert.ok(badges); assert.equal(badges.props.rotation ?? 0, 0);
+  const icons = view.nodes(badges).filter(node => node.type === 'Path');
+  assert.equal(icons.length, 4); assert.ok(icons.every(node => typeof node.props.data === 'string' && node.props.data.length > 0));
   const text = view.nodes(badges).filter(node => node.type === 'Text').map(node => node.props.text);
-  assert.equal(text.length, 5); assert.equal(text.at(-1), '+1');
+  assert.deepEqual(text, ['+1']);
   assert.ok(view.nodes(view.tree).some(node => node.props?.['aria-label'] === 'Состояния фигур'));
 });
 test('native menu scrolling is available while canvas touch gestures remain isolated', () => {

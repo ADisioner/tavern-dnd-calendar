@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Stage, Layer, Image as CanvasImage, Line, Rect, Group, Circle, Text } from 'react-konva';
+import { Stage, Layer, Image as CanvasImage, Line, Rect, Group, Circle, Path, Text } from 'react-konva';
 import type Konva from 'konva';
 import { ZoomIn, ZoomOut, Scan } from 'lucide-react';
 import { fitCamera, zoomAt, snapCenter, screenToWorld, worldToScreen, type Camera, type Point } from '@/lib/table/geometry';
@@ -244,9 +244,12 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
           <Circle radius={radius - 5} fill={token.color} opacity={0.16} listening={false}/>
           <Text text={token.name.match(/^Противник (\d+)$/)?.[1] ?? token.name.slice(0, 2).toLocaleUpperCase('ru-RU')} x={-radius} y={-radius * 0.44} width={radius * 2} fontSize={radius * 0.72} align="center" fill="#fff0d2" fontStyle="bold" listening={false}/></>}</Group>
           {token.showLabel !== false && (token.showLabel || selected || token.ownerId) && <Text text={token.name} x={-70} y={radius + 8} width={140} fontSize={14} align="center" fill="#f7e8ca" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>}
-          {!!token.statuses?.length && <Group name="condition-badges" listening={false} x={radius - 13 / camera.scale} y={-radius - 8 / camera.scale} scaleX={1 / camera.scale} scaleY={1 / camera.scale}>
-            {token.statuses.slice(0, 4).map((status, index) => <Group key={status} x={(index % 2) * 27} y={Math.floor(index / 2) * 17}><Rect width={25} height={15} cornerRadius={3} fill="#202525" stroke={CONDITIONS[status].color} strokeWidth={1.5}/><Text text={CONDITIONS[status].short + (status === 'exhaustion' ? token.exhaustionLevel ?? 1 : '')} width={25} height={15} align="center" verticalAlign="middle" fontSize={9} fontStyle="bold" fill={CONDITIONS[status].color}/></Group>)}
-            {token.statuses.length > 4 && <Text text={`+${token.statuses.length - 4}`} x={0} y={34} width={52} height={15} align="center" fontSize={11} fill="#f7e8ca" stroke="#202525" strokeWidth={3} fillAfterStrokeEnabled/>}
+          {!!token.statuses?.length && <Group name="condition-badges" listening={false} x={radius - 9 / camera.scale} y={-radius - 9 / camera.scale} scaleX={1 / camera.scale} scaleY={1 / camera.scale}>
+            {token.statuses.slice(0, 4).map((status, index) => <Group key={status} x={(index % 2) * 21} y={Math.floor(index / 2) * 21}>
+              <Circle x={10} y={10} radius={9} fill="#202525" stroke={CONDITIONS[status].color} strokeWidth={1.5}/>
+              <Path data={CONDITIONS[status].icon} x={3} y={3} scaleX={7 / 12} scaleY={7 / 12} stroke={CONDITIONS[status].color} strokeWidth={2} lineCap="round" lineJoin="round" fillEnabled={false}/>
+            </Group>)}
+            {token.statuses.length > 4 && <Text text={`+${token.statuses.length - 4}`} x={0} y={43} width={42} height={15} align="center" fontSize={11} fill="#f7e8ca" stroke="#202525" strokeWidth={3} fillAfterStrokeEnabled/>}
           </Group>}
           {token.ownerId && <Circle radius={5} x={radius * 0.75} y={-radius * 0.7} fill="#a9c496" stroke="#202723" strokeWidth={2} listening={false}/>}
         </Group>;

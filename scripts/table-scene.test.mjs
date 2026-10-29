@@ -8,6 +8,7 @@ import {
   createPrototypeScene,
   sceneSchema,
 } from '../lib/table/scene.ts';
+import { CONDITION_IDS, CONDITIONS } from '../lib/table/conditions.ts';
 
 const masterId = '11111111-1111-4111-8111-111111111111';
 const playerAId = '22222222-2222-4222-8222-222222222222';
@@ -237,6 +238,15 @@ test('multiple D&D statuses and exhaustion persist through edits and copying, in
   const cleared = applyTableCommand(normal, sceneCommand(normal, 'update', { tokenId: token.id, expectedVersion: 2,
     name: token.name, size: token.size, ownerId: token.ownerId, statuses: [] }), playerA, roster);
   assert.deepEqual(cleared.tokens[0].statuses, []);
+});
+
+test('every standard and custom status has a unique vector sigil, including concentration and death', () => {
+  assert.equal(CONDITION_IDS.length, 17);
+  assert.ok(CONDITION_IDS.includes('concentration'));
+  assert.ok(CONDITION_IDS.includes('dead'));
+  const sigils = CONDITION_IDS.map(id => CONDITIONS[id].icon);
+  assert.ok(sigils.every(icon => typeof icon === 'string' && icon.trim().length > 0));
+  assert.equal(new Set(sigils).size, CONDITION_IDS.length);
 });
 
 test('locked group member blocks movement but participants can unlock, edit and remove', () => {

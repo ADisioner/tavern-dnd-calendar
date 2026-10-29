@@ -110,7 +110,12 @@ test('status tab exposes all conditions and independently toggles conditions, ex
   let tree = view.render(); view.find(tree, 'Дополнительно').props.onClick(); tree = view.render();
   view.find(tree, 'Статус').props.onClick(); tree = view.render();
   const checks = view.nodes(tree).filter(node => node.type === 'input' && node.props.type === 'checkbox');
-  assert.equal(checks.length, 15);
+  assert.equal(checks.length, 17);
+  assert.ok(checks.some(node => node.props.value === 'concentration'));
+  assert.ok(checks.some(node => node.props.value === 'dead'));
+  const symbols = view.nodes(tree).filter(node => node.type === 'svg' && node.props.className === 'token-condition-icon');
+  assert.equal(symbols.length, 17);
+  assert.ok(symbols.every(node => view.nodes(node).some(child => child.type === 'path' && child.props.d)));
   const blind = checks.find(node => node.props.value === 'blinded'), poison = checks.find(node => node.props.value === 'poisoned');
   assert.equal(blind.props.checked, true); assert.equal(poison.props.checked, true);
   blind.props.onChange(); assert.equal(view.actions.at(-1)[1], 'status'); assert.equal(view.actions.at(-1)[2], 'blinded');
