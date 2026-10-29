@@ -39,6 +39,28 @@ function app(role = 'player') {
   return { tokens, sent, render, canvas, keyboard: () => keyboard, nodes };
 }
 
+test('music window hides locally without sending a shared pause and retains the iframe', () => {
+  const exports = {}, sent = [];
+  let closed = false;
+  const jsx = (type, props) => ({ type, props });
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../app/table/table-music-panel.tsx', import.meta.url), 'utf8'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS },
+  }).outputText, { exports, require: name => {
+    if (name === 'react') return { useState: initial => [initial, () => {}], useMemo: callback => callback() };
+    if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
+    return {};
+  } });
+  const props = { music: { tracks: [{ id: 'track', videoId: 'dQw4w9WgXcQ', title: 'Song' }], currentTrackId: 'track', playing: true, startedAt: 0, positionSeconds: 0 },
+    disabled: false, hidden: false, send: command => sent.push(command), onClose: () => { closed = true; } };
+  function nodes(tree) { return !tree || typeof tree !== 'object' ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...nodes(tree.props?.children)]; }
+  nodes(exports.default(props)).find(node => node.props?.['aria-label'] === 'Скрыть окно музыки').props.onClick();
+  assert.equal(closed, true);
+  assert.deepEqual(sent, []);
+  const hidden = exports.default({ ...props, hidden: true });
+  assert.equal(hidden.props.hidden, true);
+  assert.ok(nodes(hidden).some(node => node.type === 'iframe'));
+});
+
 test('Shift selection expands groups and toggles them without losing the primary token', () => {
   const view = app();
   view.canvas().onSelect('a'); view.canvas().onSelect('b', true);
@@ -189,3 +211,4 @@ test('ruler button activates the line and its menu escapes the clipping toolbar'
   assert.equal(view.nodes(toolbar).some(node => node.props?.className === 'table-ruler-menu'), false);
   assert.ok(view.nodes(main).some(node => node.props?.className === 'table-ruler-menu'));
 });
+
