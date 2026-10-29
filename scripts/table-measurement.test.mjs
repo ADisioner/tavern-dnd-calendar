@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { areaPoints, distanceFeet, snapMeasurePoint } from '../lib/table/measurement.ts';
+import { areaPoints, distanceFeet, measurementMessageSchema, snapMeasurePoint } from '../lib/table/measurement.ts';
 
 const closeTo = (actual, expected, epsilon = 0.001) => assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} was not within ${epsilon} of ${expected}`);
 
@@ -31,4 +31,12 @@ test('sphere preview uses the dragged radius and cone points toward the drag end
   assert.equal(cone[0].x, 40); assert.equal(cone[0].y, 40);
   assert.equal(cone.at(-1).x, 40); assert.equal(cone.at(-1).y, 40);
   assert.ok(cone.slice(1, -1).every(point => point.x > 40));
+});
+
+test('shared measurements validate bounded-shaped ephemeral frames and explicit clears', () => {
+  const measurementId = crypto.randomUUID(), sceneId = crypto.randomUUID();
+  assert.equal(measurementMessageSchema.parse({ type: 'measurement-frame', measurementId, sceneId, seq: 2, mode: 'cone', from: { x: 0, y: 0 }, to: { x: 80, y: 160 } }).type, 'measurement-frame');
+  assert.equal(measurementMessageSchema.parse({ type: 'measurement-frame', measurementId, sceneId, seq: 2, mode: 'move', from: { x: 0, y: 0 }, to: { x: 80, y: 160 } }).mode, 'move');
+  assert.equal(measurementMessageSchema.parse({ type: 'measurement-clear', measurementId, sceneId, seq: 3 }).type, 'measurement-clear');
+  assert.equal(measurementMessageSchema.safeParse({ type: 'measurement-frame', measurementId, sceneId, seq: 1, mode: 'square', from: { x: NaN, y: 0 }, to: { x: 0, y: 0 } }).success, false);
 });

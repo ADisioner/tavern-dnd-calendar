@@ -12,6 +12,11 @@ import type { TableCanvasProps } from './table-canvas';
 import TableLibrary from './table-library';
 import SceneLibrary from './scene-library';
 import TableMusicPanel from './table-music-panel';
+import DiceTray from './dice-tray';
+import { Dice5 } from 'lucide-react';
+import { CloudFog } from 'lucide-react';
+import FogControls, { type FogEdit } from './fog-controls';
+import CombatPanel from './combat-panel';
 import { assetUrl } from '@/lib/table/assets';
 import './table.css';
 
@@ -37,6 +42,9 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
   const [rulerMenuTop, setRulerMenuTop] = useState(0);
   const [panelOpen, setPanelOpen] = useState(false);
   const [musicOpen, setMusicOpen] = useState(false);
+  const [diceOpen, setDiceOpen] = useState(false);
+  const [fogOpen,setFogOpen]=useState(false),[fogEdit,setFogEdit]=useState<FogEdit|null>(null);
+  const [combatOpen,setCombatOpen]=useState(false);
   const [timezone, setTimezone] = useState('UTC');
   useTokenKeyboard({ scene: room.scene, actor: room.bootstrap?.actor, selectedId, connection: room.connection, pending: room.pending,
     motionStore: room.motionStore, startMotion: room.startMotion, previewMotion: room.previewMotion, endMotion: room.endMotion, removeToken, duplicateToken });
@@ -156,7 +164,7 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     {room.connection === 'offline' && scene && <div className="table-notice">Соединение потеряно. На карте — последнее подтверждённое состояние. <button className="text-button" onClick={room.reconnect}><RefreshCw size={14}/>Подключиться</button></div>}
     {previewing && scene && <div className="scene-preview-notice" role="status"><span>За ширмой: <strong>{scene.name}</strong>. Группа остаётся на сцене «{activeSceneName}».</span><button className="small-button" disabled={disabled} onClick={() => room.send({ type: 'scene-activate', targetSceneId: scene.id })}>Показать группе</button><button className="text-button" disabled={disabled} onClick={() => room.send({ type: 'scene-view', targetSceneId: room.activeSceneId })}>Вернуться к группе</button></div>}
     <div className="table-main">
-      {Canvas && shownScene && actor ? <Canvas key={shownScene.id} scene={shownScene} actor={actor} selectedId={selectedId} tool={tool} measureMode={measureMode} snap={snap} pending={disabled} selectedIds={selectedIds} onSelect={selectToken} onSelectMany={selectMany} brushColor={brushColor} brushWidth={brushWidth} onDraw={drawing => room.send({ type: 'draw', drawing })} onErase={drawingId => room.send({ type: 'erase', drawingId })} onMove={move} onTokenAction={tokenAction} motionStore={room.motionStore} onMotionStart={room.startMotion} onMotionPreview={room.previewMotion} onMotionEnd={room.endMotion}/> : <div className="table-stage-wrap"><div className="table-stage-loading">Готовим карту и фигурки…</div></div>}
+      {Canvas && shownScene && actor ? <Canvas key={shownScene.id} scene={shownScene} actor={actor} selectedId={selectedId} tool={tool} measureMode={measureMode} snap={snap} pending={disabled || !!room.playerViewId} selectedIds={selectedIds} onSelect={selectToken} onSelectMany={selectMany} brushColor={brushColor} brushWidth={brushWidth} onDraw={drawing => room.send({ type: 'draw', drawing })} onErase={drawingId => room.send({ type: 'erase', drawingId })} onMove={move} onTokenAction={tokenAction} measurements={room.measurements} onMeasurement={room.sendMeasurement} fogEdit={fogEdit} onFogGesture={(mode,from,to)=>{if(mode==="wall"||mode==="door")room.send({type:"wall-set",wall:{id:crypto.randomUUID(),a:from,b:to,door:mode==="door",open:false}});else room.send({type:"fog-area",area:{id:crypto.randomUUID(),x:Math.min(from.x,to.x),y:Math.min(from.y,to.y),width:Math.abs(to.x-from.x)||1,height:Math.abs(to.y-from.y)||1,reveal:mode==="reveal"}});}} motionStore={room.motionStore} onMotionStart={room.startMotion} onMotionPreview={room.previewMotion} onMotionEnd={room.endMotion}/> : <div className="table-stage-wrap"><div className="table-stage-loading">Готовим карту и фигурки…</div></div>}
       <aside className="table-tools" aria-label="Инструменты карты" role="toolbar">
         <button className="table-tool" title="Перемещение карты" aria-label="Перемещение карты" aria-pressed={tool === 'pan'} onClick={() => { setTool(tool === 'pan' ? 'select' : 'pan'); setRulerMenuOpen(false); }}><Hand size={21}/></button>
         <button className="table-tool" title="Выбор токенов" aria-label="Выбор токенов" aria-pressed={tool === 'select' && measureMode !== 'move'} onClick={() => { setTool('select'); setMeasureMode('line'); setRulerMenuOpen(false); }}><MousePointer2 size={20}/></button>
@@ -170,6 +178,8 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
         <button className="table-tool" title={room.music?.playing ? 'Общая музыка — играет' : 'Общая музыка'} aria-label="Общая музыка" aria-pressed={musicOpen} aria-expanded={musicOpen} aria-controls="table-music-panel" onClick={() => setMusicOpen(value => !value)}><Music2 size={20}/></button>
         <button className="table-tool" title={panelOpen ? 'Закрыть панель стола' : 'Открыть панель стола'} aria-label={panelOpen ? 'Закрыть панель стола' : 'Открыть панель стола'} aria-pressed={panelOpen} onClick={() => setPanelOpen(value => !value)}>{panelOpen ? <PanelRightClose size={20}/> : <PanelRightOpen size={20}/>}</button>
       </aside>
+      <div className="vtt-quick-tools"><button className="table-tool" aria-label="Инициатива и бой" title="Инициатива и бой" aria-expanded={combatOpen} onClick={()=>{setCombatOpen(value=>!value);setFogOpen(false);setFogEdit(null);setDiceOpen(false);setMusicOpen(false);}}><Swords size={20}/></button>{master&&<button className="table-tool" title="Туман войны" aria-label="Туман войны" onClick={()=>{setFogOpen(value=>!value);setDiceOpen(false);setCombatOpen(false);setMusicOpen(false);}}><CloudFog size={20}/></button>}<button className="table-tool" title="Кубики" aria-label="Кубики" aria-expanded={diceOpen} onClick={()=>{setDiceOpen(value=>!value);setFogOpen(false);setFogEdit(null);setCombatOpen(false);setMusicOpen(false);}}><Dice5 size={20}/></button></div>
+      {master&&fogOpen&&scene&&<FogControls scene={scene} roster={bootstrap?.roster??[]} selectedId={selectedId} preview={room.playerViewId??null} edit={fogEdit} setEdit={mode=>{setFogEdit(mode);setTool("select");}} disabled={disabled} send={room.send} onClose={()=>{setFogOpen(false);setFogEdit(null);}}/>}{combatOpen&&scene&&actor&&<CombatPanel scene={scene} actor={actor} selectedId={selectedId} disabled={disabled||!!room.playerViewId} send={room.send} onSelect={id=>selectToken(id)} onClose={()=>setCombatOpen(false)}/>}<DiceTray timezone={timezone} rolls={room.rolls} connected={room.connection==="connected"} open={diceOpen} master={master} disabled={disabled} send={room.send} onClose={()=>setDiceOpen(false)}/>
       <TableMusicPanel music={room.music} disabled={disabled} hidden={!musicOpen} send={room.send} onClose={() => setMusicOpen(false)}/>
       {rulerMenuOpen && <div id="table-ruler-menu" className="table-ruler-menu" style={{ top: rulerMenuTop }} role="group" aria-label="Режим линейки">
         {([['line', 'Линейка', Ruler], ['cone', 'Конус', Cone], ['sphere', 'Сфера', Circle], ['square', 'Квадрат', Square], ['move', 'Линейка движения токена', Route]] as const).map(([mode, label, Icon]) => <button key={mode} type="button" className="table-tool" aria-label={label} title={label} aria-pressed={measureMode === mode} onClick={() => chooseMeasureMode(mode)}><Icon size={19}/></button>)}
@@ -204,4 +214,3 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
     </div>{libraryOpen && actor && <TableLibrary campaignId={campaignId} actor={actor} version={room.libraryVersion} disabled={disabled} actionError={room.error} onClose={() => setLibraryOpen(false)} onAdd={asset => room.send({ type: 'add', ownerId: actor.userId, assetId: asset.id, name: asset.name.replace(/\.[^.]+$/, '').slice(0, 40) || 'Токен' })} onMap={asset => room.send({ type: 'map', assetId: asset.id })}/>}<footer className="table-status-bar"><span>Таверна · игровой стол</span><span>{scene ? `Сохранено в ${new Intl.DateTimeFormat('ru-RU', { timeZone: timezone, hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(scene.updatedAt)}` : 'Подключение к кампании…'}</span><span>Карта · токены · общая сцена</span></footer>
   </div>;
 }
-

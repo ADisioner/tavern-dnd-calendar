@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Stage, Layer, Image as CanvasImage, Line, Rect, Group, Circle, Path, Text } from 'react-konva';
+import { Stage, Layer, Image as CanvasImage, Line, Rect, Group, Circle, Path, Text, Shape } from 'react-konva';
 import type Konva from 'konva';
 import { ZoomIn, ZoomOut, Scan } from 'lucide-react';
 import { fitCamera, zoomAt, snapCenter, screenToWorld, worldToScreen, type Camera, type Point } from '@/lib/table/geometry';
@@ -9,12 +9,15 @@ import { assetUrl } from '@/lib/table/assets';
 import { boundedPoint, type MotionStore } from '@/lib/table/motion';
 import { tokensInRect } from '@/lib/table/selection';
 import { areaPoints, distanceFeet, snapMeasurePoint, type AreaMode, type MeasureMode } from '@/lib/table/measurement';
+import type { SharedMeasurement } from '@/lib/table/measurement';
 import TokenContextMenu, { tokenMenuPlacement, type TokenActionHandler } from './token-context-menu';
 import { CONDITIONS } from '@/lib/table/conditions';
+import { FOG_CELL } from '@/lib/table/fog';
+import type { FogEdit } from './fog-controls';
 
 type CanvasDrawing = { id: string; color: string; width: number; points: number[] };
 type MeasureGesture = { kind: 'measure'; mode: AreaMode; from: Point; to: Point; committed?: boolean };
-type CanvasGesture = { kind: 'draw'; drawing: CanvasDrawing } | { kind: 'select'; from: Point; to: Point; additive: boolean } | MeasureGesture;
+type CanvasGesture = { kind: 'draw'; drawing: CanvasDrawing } | { kind: 'select'; from: Point; to: Point; additive: boolean } | MeasureGesture | {kind:'fog';mode:FogEdit;from:Point;to:Point};
 type SelectionMotion = { draggedId: string; origin: Point; members: TableToken[]; units: { token: TableToken; origin: Point }[] };
 
 function TokenPortrait({ campaignId, assetId, radius }: { campaignId: string; assetId: string; radius: number }) {
@@ -36,9 +39,11 @@ export type TableCanvasProps = {
   pending: boolean; onSelect: (id: string | null, additive?: boolean) => void; onSelectMany?: (ids: string[], additive?: boolean) => void; onMove: (token: TableToken, point: Point) => boolean;
   brushColor?: string; brushWidth?: number; onDraw?: (drawing: CanvasDrawing) => void; onErase?: (drawingId: string) => void;
   onTokenAction?: TokenActionHandler;
+  measurements?: SharedMeasurement[]; onMeasurement?: (message: Record<string, unknown>) => void;
+  fogEdit?:FogEdit|null; onFogGesture?:(mode:FogEdit,from:Point,to:Point)=>void;
   motionStore: MotionStore; onMotionStart: (token: TableToken) => boolean; onMotionPreview: (token: TableToken, point: Point, duration?: number) => boolean; onMotionEnd: (tokenId: string) => void;
 };
-export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, measureMode = 'line', snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
+export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, measureMode = 'line', snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, measurements = [], onMeasurement, fogEdit, onFogGesture, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null), stageRef = useRef<Konva.Stage>(null);
   const [viewport, setViewport] = useState({ width: 800, height: 600 });
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 0.5 });
@@ -52,6 +57,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
   const [gesture, setGesture] = useState<CanvasGesture | null>(null);
   const [measurePreview, setMeasurePreview] = useState<MeasureGesture | null>(null);
   const measurePreviewRef = useRef<MeasureGesture | null>(null);
+  const sharedMeasurement = useRef<{ measurementId: string; seq: number } | null>(null);
   const updateMeasurePreview = (next: MeasureGesture | null) => { measurePreviewRef.current = next; setMeasurePreview(next); };
   const [movementPreview, setMovementPreview] = useState<{ tokenId: string; from: Point; to: Point } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -63,9 +69,10 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     if (action === 'resize' && typeof value === 'number') setResizePreview({ id: token.id, version: token.version, size: value, committed: true });
     onTokenAction?.(token, action, value);
   };
-  const movable = (token: TableToken) => canMoveToken(token, actor) && !linkedTokens(scene, token).some(member => member.locked);
+  const movable = (token: TableToken) => !fogEdit && (!scene.fog?.enabled || actor.role==='master'&&!scene.fog.view || token.ownerId===actor.userId) && canMoveToken(token, actor) && !linkedTokens(scene, token).some(member => member.locked);
   const selectedSet = new Set(selectedIds ?? (selectedId ? [selectedId] : []));
-  const cancelGesture = () => { gestureRef.current = null; setGesture(null); };
+  const clearSharedMeasurement = () => { const shared = sharedMeasurement.current; if (shared) onMeasurement?.({ type: 'measurement-clear', measurementId: shared.measurementId, sceneId: scene.id, seq: ++shared.seq }); sharedMeasurement.current = null; };
+  const cancelGesture = (clearMeasurement = true) => { if (clearMeasurement && gestureRef.current?.kind === 'measure') clearSharedMeasurement(); gestureRef.current = null; setGesture(null); };
   const finishTokenDrags = (event?: MouseEvent) => { for (const id of dragging.current) tokenNodes.current.get(id)?.stopDrag(event); };
   const cameraActive = () => tool === 'pan' || space || middlePan || cameraOverride.current || pinching.current;
   const worldPointer = () => { const point = stageRef.current?.getPointerPosition(); return point ? screenToWorld(point, camera) : null; };
@@ -74,12 +81,17 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     if (cameraActive() || pending) return;
     const pointer = worldPointer(); if (!pointer) return;
     let next: CanvasGesture;
-    if (tool === 'draw' && onDraw) {
+    if (fogEdit && actor.role==='master') {
+      const point=drawingPoint(pointer); next={kind:'fog',mode:fogEdit,from:point,to:point};
+    } else if (tool === 'draw' && onDraw) {
       const point = drawingPoint(pointer);
       next = { kind: 'draw', drawing: { id: crypto.randomUUID(), color: brushColor, width: brushWidth, points: [point.x, point.y] } };
     } else if (tool === 'measure' && measureMode !== 'move') {
       const point = snapMeasurePoint(pointer, scene.gridSize);
       next = { kind: 'measure', mode: measureMode, from: point, to: point };
+      clearSharedMeasurement();
+      const shared = { measurementId: crypto.randomUUID(), seq: 0 }; sharedMeasurement.current = shared;
+      onMeasurement?.({ type: 'measurement-frame', ...shared, sceneId: scene.id, mode: measureMode, from: point, to: point });
       updateMeasurePreview(null);
     } else if (tool === 'select' && blank) next = { kind: 'select', from: pointer, to: pointer, additive };
     else return;
@@ -94,18 +106,30 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       // Keep the draft within the same validated point limit as a shared stroke.
       if (points.length >= 2048 || (points.at(-2) === bounded.x && points.at(-1) === bounded.y)) return;
       next = { kind: 'draw', drawing: { ...current.drawing, points: [...points, bounded.x, bounded.y] } };
-    } else if (current.kind === 'measure') next = { ...current, to: snapMeasurePoint(point, scene.gridSize) };
+    } else if (current.kind === 'measure') {
+      next = { ...current, to: snapMeasurePoint(point, scene.gridSize) };
+      const shared = sharedMeasurement.current;
+      if (shared) onMeasurement?.({ type: 'measurement-frame', measurementId: shared.measurementId, sceneId: scene.id, seq: ++shared.seq, mode: next.mode, from: next.from, to: next.to });
+    }
     else next = { ...current, to: point };
     gestureRef.current = next; setGesture(next);
   };
   const finishGesture = () => {
-    const current = gestureRef.current; cancelGesture();
-    if (!current || cameraActive() || pending) return;
+    const current = gestureRef.current; cancelGesture(false);
+    if (!current) return;
+    if (cameraActive() || pending) { if (current.kind === 'measure') clearSharedMeasurement(); return; }
     if (current.kind === 'draw') {
       const drawing = current.drawing;
       onDraw?.({ ...drawing, points: drawing.points.length === 2 ? [...drawing.points, ...drawing.points] : drawing.points });
     } else if (current.kind === 'measure') {
-      if (current.from.x !== current.to.x || current.from.y !== current.to.y) updateMeasurePreview({ ...current, committed: true });
+      if (current.from.x !== current.to.x || current.from.y !== current.to.y) {
+        updateMeasurePreview({ ...current, committed: true });
+        const shared = sharedMeasurement.current;
+        if (shared) onMeasurement?.({ type: 'measurement-frame', measurementId: shared.measurementId, sceneId: scene.id, seq: ++shared.seq, mode: current.mode, from: current.from, to: current.to });
+      }
+      else clearSharedMeasurement();
+    } else if(current.kind==='fog') {
+      if(Math.hypot(current.to.x-current.from.x,current.to.y-current.from.y)>2)onFogGesture?.(current.mode,current.from,drawingPoint(current.to));
     } else if (Math.hypot(current.to.x - current.from.x, current.to.y - current.from.y) * camera.scale < 3) {
       if (!current.additive) onSelect(null);
     } else {
@@ -115,13 +139,14 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     }
   };
   const eraseDrawing = (id: string) => { if (tool === 'erase' && !cameraActive() && !pending) onErase?.(id); };
+  const fogMapKey=scene.fog?.view?JSON.stringify(scene.fog.view):'';
   useEffect(() => {
     const image = new window.Image(); let active = true;
     image.onload = () => { if (active) setMap(image); };
     image.onerror = () => { if (active) { image.src = '/images/table-prototype-map.svg'; image.onerror = null; } };
-    image.src = scene.mapAssetId ? assetUrl(scene.campaignId, scene.mapAssetId) : '/images/table-prototype-map.svg';
+    image.src = scene.mapAssetId ? assetUrl(scene.campaignId, scene.mapAssetId)+(fogMapKey?'&mapRevision='+scene.revision:'') : '/images/table-prototype-map.svg';
     return () => { active = false; };
-  }, [scene.campaignId, scene.mapAssetId]);
+  }, [scene.campaignId, scene.mapAssetId, fogMapKey]);
   useEffect(() => {
     const wrap = wrapRef.current; if (!wrap) return;
     const observer = new ResizeObserver(([entry]) => {
@@ -141,8 +166,9 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     const down = (event: KeyboardEvent) => {
       if (document.querySelector('dialog[open]')) return;
       if (event.target instanceof HTMLElement && /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+      if(event.code==='Escape'&&gestureRef.current?.kind==='fog'){event.preventDefault();cancelGesture();return;}
       if (event.code === 'Escape' && (gestureRef.current?.kind === 'measure' || measurePreviewRef.current)) {
-        event.preventDefault(); cancelGesture(); updateMeasurePreview(null); return;
+        event.preventDefault(); cancelGesture(); clearSharedMeasurement(); updateMeasurePreview(null); return;
       }
       if (event.code === 'Space') {
         event.preventDefault(); cameraOverride.current = true; cancelGesture(); finishTokenDrags(); setSpace(true);
@@ -157,13 +183,13 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       if (event.type !== 'blur' && (event as MouseEvent).button !== 1) return;
       if (middlePan) stageRef.current?.stopDrag();
       cameraOverride.current = false;
-      if (event.type === 'blur') { cancelGesture(); pinching.current = false; }
+      if (event.type === 'blur') { cancelGesture(); clearSharedMeasurement(); pinching.current = false; }
       setMiddlePan(false);
     };
     window.addEventListener('mouseup', finish); window.addEventListener('blur', finish);
     return () => { window.removeEventListener('mouseup', finish); window.removeEventListener('blur', finish); };
   }, [middlePan]);
-  useEffect(() => { cancelGesture(); updateMeasurePreview(null); setMovementPreview(null); dragStarts.current.clear(); selectionMotion.current = null; }, [tool, measureMode, scene.id]);
+  useEffect(() => { clearSharedMeasurement(); cancelGesture(false); updateMeasurePreview(null); setMovementPreview(null); dragStarts.current.clear(); selectionMotion.current = null; return () => clearSharedMeasurement(); }, [tool, measureMode, scene.id]);
   const fit = useCallback(() => setCamera(fitCamera(scene, viewport)), [scene, viewport]);
   const zoom = (factor: number) => setCamera(current => zoomAt(current, { x: viewport.width / 2, y: viewport.height / 2 }, factor));
   const grid: React.ReactNode[] = [];
@@ -280,7 +306,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
             const origin = motionStore.position(token.id, token);
             selectionMotion.current = { draggedId: token.id, origin, members, units: units.map(unit => ({ token: unit, origin: motionStore.position(unit.id, unit) })) };
             dragging.current.add(token.id);
-            if (measureMode === 'move') { dragStarts.current.set(token.id, origin); setMovementPreview({ tokenId: token.id, from: origin, to: origin }); }
+            if (measureMode === 'move') { dragStarts.current.set(token.id, origin); const shared = { measurementId: crypto.randomUUID(), seq: 0 }; sharedMeasurement.current = shared; onMeasurement?.({ type: 'measurement-frame', ...shared, sceneId: scene.id, mode: 'move', from: origin, to: origin }); setMovementPreview({ tokenId: token.id, from: origin, to: origin }); }
           }}
           onDragMove={event => {
             event.cancelBubble = true;
@@ -291,7 +317,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
             const dx = point.x - active.origin.x, dy = point.y - active.origin.y;
             for (const unit of active.units) onMotionPreview(unit.token, { x: unit.origin.x + dx, y: unit.origin.y + dy });
             const from = dragStarts.current.get(token.id);
-            if (measureMode === 'move' && from) setMovementPreview({ tokenId: token.id, from, to: point });
+            if (measureMode === 'move' && from) { setMovementPreview({ tokenId: token.id, from, to: point }); const shared = sharedMeasurement.current; if (shared) onMeasurement?.({ type: 'measurement-frame', measurementId: shared.measurementId, sceneId: scene.id, seq: ++shared.seq, mode: 'move', from, to: point }); }
           }}
           onDragEnd={event => {
             event.cancelBubble = true;
@@ -302,9 +328,11 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
             const point = boundedSelectionPoint(scene, active.members, token, desired);
             const dx = point.x - active.origin.x, dy = point.y - active.origin.y;
             for (const unit of active.units) { onMotionPreview(unit.token, { x: unit.origin.x + dx, y: unit.origin.y + dy }, 85); onMotionEnd(unit.token.id); }
+            const shared = sharedMeasurement.current; if (shared) onMeasurement?.({ type: 'measurement-clear', measurementId: shared.measurementId, sceneId: scene.id, seq: ++shared.seq }); sharedMeasurement.current = null;
             selectionMotion.current = null; dragStarts.current.delete(token.id); setMovementPreview(null);
           }}>
           <Circle name="motion-indicator" visible={false} radius={radius + 6} stroke="#87b2c2" strokeWidth={3 / camera.scale} listening={false}/>
+          {scene.combat?.running&&scene.combat.entries.some(entry=>entry.id===scene.combat.currentId&&entry.tokenId===token.id)&&<Circle radius={radius+11/camera.scale} stroke="#73d4af" strokeWidth={3/camera.scale} listening={false}/>}
           <Text name="motion-label" visible={false} text="" x={-80} y={-radius - 27} width={160} align="center" fontSize={13} fill="#b7deeb" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>
           {selected && <Circle radius={radius + 7} stroke="#efd18b" strokeWidth={2.5 / camera.scale} dash={[7 / camera.scale, 4 / camera.scale]} listening={false}/>}
           <Group rotation={token.rotation ?? 0}>{token.assetId ? <><Circle radius={radius} fill="#252627" shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/><TokenPortrait campaignId={scene.campaignId} assetId={token.assetId} radius={radius}/></> : <><Circle radius={radius} fill="#252627" stroke={token.color} strokeWidth={4} shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/>
@@ -319,9 +347,28 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
             {token.statuses.length > 4 && <Text text={`+${token.statuses.length - 4}`} x={0} y={43} width={42} height={15} align="center" fontSize={11} fill="#f7e8ca" stroke="#202525" strokeWidth={3} fillAfterStrokeEnabled/>}
           </Group>}
           {token.ownerId && <Circle radius={5} x={radius * 0.75} y={-radius * 0.7} fill="#a9c496" stroke="#202723" strokeWidth={2} listening={false}/>}
+          {token.hp!==undefined&&token.maxHp!==undefined&&<Group listening={false} y={radius+26}><Rect x={-radius} width={radius*2} height={5/camera.scale} fill="#351f25" cornerRadius={2/camera.scale}/><Rect x={-radius} width={radius*2*Math.min(1,token.hp/token.maxHp)} height={5/camera.scale} fill={token.hp?'#78bd95':'#be7180'} cornerRadius={2/camera.scale}/><Text text={`${token.hp}/${token.maxHp}`} x={-radius} y={7/camera.scale} width={radius*2} align="center" fontSize={10/camera.scale} fill="#f7e8ca" stroke="#202525" strokeWidth={2/camera.scale} fillAfterStrokeEnabled/></Group>}
         </Group>;
       })}</Layer>
+      <Layer name="fog-overlay" listening={false}>
+        {scene.fog?.view&&<Shape sceneFunc={context=>{
+          const ctx=context._context,view=scene.fog.view!;ctx.save();ctx.fillStyle='#080e11';ctx.fillRect(0,0,scene.width,scene.height);
+          ctx.globalCompositeOperation='destination-out';ctx.fillStyle='rgba(0,0,0,0.35)';for(const key of view.exploredCells){const [x,y]=key.split(':').map(Number);ctx.fillRect(x,y,FOG_CELL,FOG_CELL);}
+          ctx.fillStyle='#000';for(const polygon of view.polygons){if(!polygon.length)continue;ctx.beginPath();polygon.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.fill();}
+          for(const area of view.areas){ctx.globalCompositeOperation=area.reveal?'destination-out':'source-over';ctx.fillStyle=area.reveal?'#000':'#080e11';ctx.fillRect(area.x,area.y,area.width,area.height);}ctx.restore();
+        }}/>}
+        {actor.role==='master'&&!scene.fog?.view&&(scene.fog?.walls??[]).map(wall=><Line key={wall.id} points={[wall.a.x,wall.a.y,wall.b.x,wall.b.y]} stroke={wall.door?(wall.open?'#71cba9':'#f0ba67'):'#c7d2d8'} strokeWidth={4/camera.scale} dash={wall.open?[7/camera.scale,6/camera.scale]:undefined}/>)}
+        {gesture?.kind==='fog'&&<Line points={gesture.mode==='wall'||gesture.mode==='door'?[gesture.from.x,gesture.from.y,gesture.to.x,gesture.to.y]:[gesture.from.x,gesture.from.y,gesture.to.x,gesture.from.y,gesture.to.x,gesture.to.y,gesture.from.x,gesture.to.y]} closed={gesture.mode==='reveal'||gesture.mode==='hide'} stroke="#e4c587" strokeWidth={2/camera.scale} dash={[6/camera.scale,4/camera.scale]}/>}
+      </Layer>
       <Layer name="measurement-overlay" listening={false}>
+        {measurements.filter(value => value.sceneId === scene.id && value.userId !== actor.userId).map(value => {
+          const points = value.mode === 'move' ? [value.from, value.to] : areaPoints(value.mode, value.from, value.to, scene.gridSize), distance = distanceFeet(value.from, value.to, scene.gridSize);
+          const measureText = value.mode === 'sphere' ? `радиус ${formatFeet(distance)}` : value.mode === 'square' ? `сторона ${formatFeet(points.length > 1 ? Math.abs(points[1].x - points[0].x) / scene.gridSize * 5 : distance)}` : formatFeet(distance);
+          return <Group key={value.measurementId}>
+            {value.mode !== 'line' ? <Line points={points.flatMap(point => [point.x, point.y])} closed fill="#79d7ce" opacity={0.12} stroke="#79d7ce" strokeWidth={2.5 / camera.scale} lineJoin="round"/> : <Line points={points.flatMap(point => [point.x, point.y])} stroke="#79d7ce" strokeWidth={3 / camera.scale} dash={[8 / camera.scale, 5 / camera.scale]} lineCap="round"/>}
+            <Text x={value.to.x + 10 / camera.scale} y={value.to.y - 22 / camera.scale} text={`${value.name} · ${measureText}`} fontSize={13 / camera.scale} fill="#baf4ed" stroke="#202733" strokeWidth={3 / camera.scale} paintOrder="stroke"/>
+          </Group>;
+        })}
         {activeMeasure && <>
           {activeMeasure.mode !== 'line' && <Line name="measurement-shape" points={measurePoints.flatMap(point => [point.x, point.y])} closed fill="#a78bfa" opacity={0.14} stroke="#c6a7ff" strokeWidth={2.5 / camera.scale} lineJoin="round"/>}
           {activeMeasure.mode === 'line' && <><Line name="measurement-shape" points={measurePoints.flatMap(point => [point.x, point.y])} stroke="#c6a7ff" strokeWidth={3 / camera.scale} dash={[8 / camera.scale, 5 / camera.scale]} lineCap="round"/><Circle x={measurePoints[0].x} y={measurePoints[0].y} radius={4 / camera.scale} fill="#c6a7ff"/><Circle x={measurePoints.at(-1)!.x} y={measurePoints.at(-1)!.y} radius={4 / camera.scale} fill="#c6a7ff"/></>}
@@ -337,8 +384,8 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
             <Text text={formatFeet(distanceFeet(movementPreview.from, movementPreview.to, scene.gridSize))} x={-34} y={-12} width={68} height={24} align="center" verticalAlign="middle" fontSize={11} fontStyle="bold" fill="#f7e3bd"/>
           </Group>
         </>}
+        {gesture?.kind === 'select' && <Rect x={Math.min(gesture.from.x, gesture.to.x)} y={Math.min(gesture.from.y, gesture.to.y)} width={Math.abs(gesture.to.x - gesture.from.x)} height={Math.abs(gesture.to.y - gesture.from.y)} fill="#efd18b" opacity={0.22} stroke="#efd18b" strokeWidth={2 / camera.scale} dash={[6 / camera.scale, 4 / camera.scale]}/>}
       </Layer>
-      <Layer listening={false}>{gesture?.kind === 'select' && <Rect x={Math.min(gesture.from.x, gesture.to.x)} y={Math.min(gesture.from.y, gesture.to.y)} width={Math.abs(gesture.to.x - gesture.from.x)} height={Math.abs(gesture.to.y - gesture.from.y)} fill="#efd18b" opacity={0.22} stroke="#efd18b" strokeWidth={2 / camera.scale} dash={[6 / camera.scale, 4 / camera.scale]}/>}</Layer>
     </Stage>
     <div className="table-token-status-accessibility" role="list" aria-label="Состояния фигур">{scene.tokens.filter(token => token.statuses?.length).map(token => <div role="listitem" key={token.id}>{token.name}: {token.statuses!.map(id => CONDITIONS[id].label + (id === 'exhaustion' ? ` ${token.exhaustionLevel ?? 1}` : '')).join(', ')}</div>)}</div>
     {primary && onTokenAction && tool === 'select' && !panning && !gesture && <TokenContextMenu key={primary.id} menuRef={menuRef} token={previewToken(primary)} pending={pending} onAction={tokenAction} onResizePreview={resize} resizePixelsPerCell={Math.max(24, scene.gridSize * camera.scale)} position={worldToScreen(resizePreview?.id === primary.id ? boundedPoint(previewToken(primary), scene.gridSize, primary) : motionStore.position(primary.id, primary), camera)} radius={previewToken(primary).size * scene.gridSize * 0.42 * camera.scale} viewport={viewport}/>}

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { Point } from './geometry.ts';
 import { CONDITION_IDS } from './conditions.ts';
+import { fogSchema, emptyFog, wallSchema, fogAreaSchema, exploreScene, projectScene, pointVisible } from './fog.ts';
+import { combatSchema, emptyCombat, combatTokenFields, combatCommandSchema, applyCombat, reconcileCombat } from './combat.ts';
 
 export type TableMember = { userId: string; name: string; role: string };
 export type TableActor = { userId: string; name: string; role: 'master' | 'player' };
@@ -16,7 +18,9 @@ export const tokenSchema = z.object({
   ownerId: z.string().uuid().nullable(), version: z.number().int().nonnegative(),
   assetId: z.string().uuid().optional(),
   groupId: z.string().uuid().optional(),
+  visionFeet: z.number().min(0).max(300).optional(), hidden: z.boolean().optional(),
   ...tokenMenuFields,
+  ...combatTokenFields,
 }).strict();
 export const drawingSchema = z.object({
   id: z.string().uuid(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
@@ -33,12 +37,15 @@ export const sceneSchema = z.object({
   gridOpacity: z.number().min(0).max(1).default(0.18),
   tokens: z.array(tokenSchema).max(150), updatedAt: z.number().int(),
   mapAssetId: z.string().uuid().nullable().optional(),
+  fog: fogSchema.default(emptyFog),
+  combat: combatSchema.default(emptyCombat),
   drawings: z.array(drawingSchema).max(300)
     .refine(drawings => drawings.reduce((total, drawing) => total + drawing.points.length, 0) <= maxDrawingCoordinates, 'На сцене доступно до 40000 координат штрихов.').default([]),
 }).strict();
 const envelope = z.object({ id: z.string().uuid(), baseRevision: z.number().int().nonnegative(), sceneId: z.string().uuid().optional() });
 const tokenIds = z.array(z.string().uuid()).min(1).max(150).refine(ids => new Set(ids).size === ids.length, 'Токены не должны повторяться.');
 export const commandSchema = z.discriminatedUnion('type', [
+  ...combatCommandSchema.options,
   envelope.extend({ type: z.literal('move'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), x: z.number().finite(), y: z.number().finite() }).strict(),
   envelope.extend({ type: z.literal('update'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), name: z.string().trim().min(1).max(40), size: z.number().min(0.5).max(3), ownerId: z.string().uuid().nullable(), ...tokenMenuFields }).strict(),
   envelope.extend({ type: z.literal('duplicate'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative() }).strict(),
@@ -48,6 +55,12 @@ export const commandSchema = z.discriminatedUnion('type', [
   envelope.extend({ type: z.literal('grid'), gridSize: z.number().int().min(20).max(160), gridVisible: z.boolean(),
     gridColor: z.string().regex(/^#[0-9a-fA-F]{6}$/), gridOpacity: z.number().min(0).max(1) }).strict(),
   envelope.extend({ type: z.literal('benchmark') }).strict(),
+  envelope.extend({ type: z.literal('fog-config'), enabled: z.boolean() }).strict(),
+  envelope.extend({ type: z.literal('wall-set'), wall: wallSchema }).strict(),
+  envelope.extend({ type: z.literal('wall-remove'), wallId: z.string().uuid() }).strict(),
+  envelope.extend({ type: z.literal('fog-area'), area: fogAreaSchema }).strict(),
+  envelope.extend({ type: z.literal('fog-reset') }).strict(),
+  envelope.extend({ type: z.literal('vision'), tokenId: z.string().uuid(), expectedVersion: z.number().int().nonnegative(), visionFeet: z.number().min(0).max(300), hidden: z.boolean() }).strict(),
   envelope.extend({ type: z.literal('draw'), drawing: drawingSchema }).strict(),
   envelope.extend({ type: z.literal('erase'), drawingId: z.string().uuid() }).strict(),
   envelope.extend({ type: z.literal('group'), tokenIds }).strict(),
@@ -104,13 +117,45 @@ function makeToken(index: number, member?: TableMember): TableToken {
 export function createPrototypeScene(campaignId: string, roster: TableMember[]): TableScene {
   return { id: crypto.randomUUID(), schemaVersion: 1, campaignId, name: 'Таверна у старого тракта', revision: 0,
     width: 1600, height: 1120, gridSize: 80, gridVisible: true, gridColor: '#decea1', gridOpacity: 0.18, updatedAt: Date.now(),
-    tokens: Array.from({ length: Math.max(8, roster.length) }, (_, i) => makeToken(i, roster[i])), drawings: [] };
+    tokens: Array.from({ length: Math.max(8, roster.length) }, (_, i) => makeToken(i, roster[i])), drawings: [], fog: emptyFog(), combat: emptyCombat() };
 }
-export function applyTableCommand(scene: TableScene, command: TableCommand, actor: TableActor, roster: TableMember[]): TableScene {
+export function applyTableCommand(scene: TableScene, command: TableCommand, actor: TableActor, roster: TableMember[], options:{random?:(sides:number)=>number}={}): TableScene {
+  if (actor.role !== 'master') {
+    const visible = new Set(projectScene(scene, actor).tokens.map(token=>token.id));
+    const ids = 'tokenId' in command ? [command.tokenId] : 'tokenIds' in command ? command.tokenIds : command.type==='remove-many' ? command.tokens.map(token=>token.tokenId) : [];
+    for (const id of ids) {
+      const token=scene.tokens.find(token=>token.id===id);
+      if(!token&&!scene.fog?.enabled&&!scene.tokens.some(token=>token.hidden))continue;
+      if(!token || !visible.has(id) || linkedTokens(scene,token).some(member=>!visible.has(member.id)||scene.fog?.enabled&&member.ownerId!==actor.userId)) throw new CommandError('forbidden','Нет доступа к выбранной фигуре.');
+    }
+    if(command.type==='draw' && command.drawing.points.some((v,i)=>i%2===0&&!pointVisible(scene,actor,{x:v,y:command.drawing.points[i+1]}))) throw new CommandError('forbidden','Область не видна.');
+    if(command.type==='erase'&&scene.fog?.enabled&&!projectScene(scene,actor).drawings.some(d=>d.id===command.drawingId))throw new CommandError('forbidden','Область не видна.');
+  }
+  const next=applyRawTableCommand(scene,command,actor,roster,options);
+  return exploreScene(reconcileCombat(scene,next), roster);
+}
+function applyRawTableCommand(scene: TableScene, command: TableCommand, actor: TableActor, roster: TableMember[],options:{random?:(sides:number)=>number}): TableScene {
   if (actor.role !== 'master' && actor.role !== 'player') throw new CommandError('forbidden', 'Нет доступа к изменению сцены.');
   if (command.sceneId && command.sceneId !== scene.id) throw new CommandError('forbidden', 'Эта сцена недоступна.');
   if (command.baseRevision > scene.revision) throw new CommandError('revision', 'Обновите состояние сцены.');
   const next: TableScene = { ...scene, tokens: scene.tokens.map(t => ({ ...t })), drawings: (scene.drawings ?? []).map(d => ({ ...d, points: [...d.points] })), revision: scene.revision + 1, updatedAt: Date.now() };
+  const combatCommand=combatCommandSchema.safeParse(command);
+  if(combatCommand.success){
+    if(command.baseRevision!==scene.revision)throw new CommandError('conflict','Бой изменился. Повторите действие.');
+    try{return sceneSchema.parse(applyCombat(next,combatCommand.data,actor,options.random));}
+    catch(error){if(error instanceof Error)throw new CommandError((error as Error & {code?:string}).code??'invalid',error.message);throw error;}
+  }
+  if (['fog-config','wall-set','wall-remove','fog-area','fog-reset','vision'].includes(command.type)) {
+    if(actor.role!=='master') throw new CommandError('forbidden','Туманом и зрением управляет мастер.');
+    const fog={...(scene.fog??emptyFog())}; delete fog.view;
+    if(command.type==='fog-config')fog.enabled=command.enabled;
+    if(command.type==='wall-set') { if(Math.hypot(command.wall.a.x-command.wall.b.x,command.wall.a.y-command.wall.b.y)<1)throw new CommandError('invalid','Стена слишком короткая.');fog.walls=[...fog.walls.filter(wall=>wall.id!==command.wall.id),command.wall]; }
+    if(command.type==='wall-remove')fog.walls=fog.walls.filter(wall=>wall.id!==command.wallId);
+    if(command.type==='fog-area')fog.manual=[...fog.manual,command.area];
+    if(command.type==='fog-reset'){fog.manual=[];fog.explored={};}
+    if(command.type==='vision') { const token=next.tokens.find(token=>token.id===command.tokenId);if(!token||token.version!==command.expectedVersion)throw new CommandError('conflict','Токен изменился.');Object.assign(token,{visionFeet:command.visionFeet,hidden:command.hidden,version:token.version+1}); }
+    next.fog=fog; return sceneSchema.parse(next);
+  }
   if (command.type === 'remove-many') {
     for (const expected of command.tokens) {
       const token = next.tokens.find(value => value.id === expected.tokenId);

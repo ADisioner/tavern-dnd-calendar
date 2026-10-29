@@ -9,6 +9,10 @@ import { CommandError, linkedTokens, boundedGroupPoint } from '../lib/table/scen
 import { roomCommandSchema, roomDataSchema, createRoom, migrateLegacyRoom, roomView, applyRoomCommand } from '../lib/table/room.ts';
 import { motionMessageSchema, affectedMotionTokens, MOTION_LEASE_MS, MAX_TABLE_MESSAGE_BYTES } from '../lib/table/motion.ts';
 import { getYouTubeVideoStatus } from '../lib/table/youtube.ts';
+import { measurementMessageSchema, snapMeasurePoint } from '../lib/table/measurement.ts';
+import { canSeeRoll } from '../lib/table/dice.ts';
+import { projectScene, tokenVisible, pointVisible } from '../lib/table/fog.ts';
+import { maskedMap } from '../lib/table/fog-map.ts';
 
 const isLoopbackOrigin = value => {
   try { const url = new URL(value); return url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname) && url.origin === value; }
@@ -30,8 +34,12 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
       const id = url.searchParams.get('asset');
       let value;
       if (request.method === 'GET' && id) {
-        const readable = room.data.scenes.filter(entry => peer.actor.role === 'master' || entry.scene.id === room.data.activeSceneId).map(entry => entry.scene);
+        const readable = room.data.scenes.filter(entry => peer.actor.role === 'master' || entry.scene.id === room.data.activeSceneId).map(entry => projectScene(entry.scene, peer.actor));
         const { asset, bytes } = await library.read(id, peer, readable);
+        if(peer.actor.role!=='master'){
+          const map=room.data.scenes.find(entry=>entry.scene.id===room.data.activeSceneId&&entry.scene.mapAssetId===id&&entry.scene.fog?.enabled)?.scene;
+          if(map){response.setHeader('Content-Type','image/png');response.end(maskedMap(bytes,asset.mime,map,peer.actor,id));return;}
+        }
         response.setHeader('Content-Type', asset.mime);
         response.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(asset.name)}`);
         response.end(bytes); return;
@@ -94,7 +102,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
         }
       }
       if (data.campaignId !== campaignId) throw new Error('Scene ownership mismatch');
-      const room = { data, receipts, file, queue: Promise.resolve(), motions: new Map() };
+      const room = { data, receipts, file, queue: Promise.resolve(), motions: new Map(), measurements: new Map(), measurementTimers: new Map() };
       // Initial IDs and any migrated room are durable before the first snapshot.
       await save(room);
       return room;
@@ -132,8 +140,14 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     }
   }
   async function snapshot(socket, room, commandId) {
-    const peer = await refresh(socket, false);
-    if (peer) send(socket, { type: 'snapshot', ...roomView(room.data, peer.actor, peer.previewSceneId), actor: peer.actor, roster: peer.roster, peers: presence(peer.campaignId), commandId });
+    const peer = await refresh(socket, true);
+    if (peer) {
+      const sceneId = viewedScene(room, peer), measurements = [...room.measurements.values()].filter(value => value.sceneId === sceneId && value.socket !== socket).map(({ socket: _socket, ...value }) => value);
+      const view=roomView(room.data, peer.actor, peer.previewSceneId, peer.playerViewId);
+      const viewer=peer.playerViewId?{...peer.actor,userId:peer.playerViewId,role:'player'}:peer.actor;
+      const raw=room.data.scenes.find(entry=>entry.scene.id===sceneId)?.scene;
+      send(socket, { type: 'snapshot', ...view, actor: peer.actor, roster: peer.roster, peers: presence(peer.campaignId), measurements:measurements.filter(m=>!raw||pointVisible(raw,viewer,m.from)&&pointVisible(raw,viewer,m.to)), commandId });
+    }
   }
   async function broadcast(room, commandId) {
     await Promise.all([...peers].filter(([, p]) => p.campaignId === room.data.campaignId).map(([s]) => snapshot(s, room, commandId)));
@@ -142,11 +156,65 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
   function viewedScene(room, peer) {
     return peer.actor.role === 'master' && room.data.scenes.some(entry => entry.scene.id === peer.previewSceneId && !entry.archived) ? peer.previewSceneId : room.data.activeSceneId;
   }
-  function motionBroadcast(room, motion, message) {
-    for (const [socket, peer] of peers) if (peer.campaignId === room.data.campaignId && viewedScene(room, peer) === motion.sceneId) {
-      if (peer.checkedAt > Date.now() - 2500 && peer.claims.expires > Date.now()) send(socket, message);
+  async function motionBroadcast(room, motion, message) {
+    const sourceScene=room.data.scenes.find(entry=>entry.scene.id===motion.sceneId)?.scene;
+    const sensitive=motion.sceneId!==room.data.activeSceneId||!!sourceScene?.fog?.enabled||sourceScene?.tokens.some(t=>t.hidden||t.hp!==undefined||t.ac!==undefined||t.effects?.length);
+    for (const [socket, cached] of peers) {
+      if(cached.campaignId!==room.data.campaignId)continue;
+      const peer=await refresh(socket,sensitive);if(!peer||viewedScene(room,peer)!==motion.sceneId)continue;
+      const scene=room.data.scenes.find(entry=>entry.scene.id===motion.sceneId)?.scene;
+      const viewer=peer.playerViewId?{...peer.actor,userId:peer.playerViewId,role:'player'}:peer.actor;
+      const token=scene?.tokens.find(token=>token.id===motion.tokenId);
+      if(!scene||!token||!tokenVisible(scene,viewer,token)||scene.fog?.enabled&&viewer.role!=='master'&&token.ownerId!==viewer.userId)continue;
+      let delivered=message;
+      if(message.type==='motion-committed') { const visible=projectScene(scene,viewer).tokens; delivered={...message,token:visible.find(t=>t.id===motion.tokenId),tokens:visible.filter(t=>(message.tokens??[]).some(source=>source.id===t.id))}; }
+      if (peer.checkedAt > Date.now() - 2500 && peer.claims.expires > Date.now()) send(socket, delivered);
       else if (message.type === 'motion-committed') void snapshot(socket, room, message.motionId).catch(() => {});
     }
+  }
+  async function measurementBroadcast(room, sceneId) {
+    for (const [socket, cached] of peers) {
+      if(cached.campaignId!==room.data.campaignId)continue;
+      const peer=await refresh(socket,true);if(!peer||viewedScene(room,peer)!==sceneId)continue;
+      const measurements = [...room.measurements.values()].filter(value => value.sceneId === sceneId && value.socket !== socket).map(({ socket: _socket, ...value }) => value);
+      const scene=room.data.scenes.find(entry=>entry.scene.id===sceneId)?.scene,viewer=peer.playerViewId?{...peer.actor,userId:peer.playerViewId,role:'player'}:peer.actor;
+      send(socket, { type: 'measurement-state', sceneId, measurements:measurements.filter(m=>!scene||pointVisible(scene,viewer,m.from)&&pointVisible(scene,viewer,m.to)) });
+    }
+  }
+  async function measurement(socket, raw) {
+    const parsed = measurementMessageSchema.safeParse(raw); if (!parsed.success) return;
+    const peer = await refresh(socket,true); if (!peer || peer.claims.expires <= Date.now()) return;
+    const room = await rooms.get(peer.campaignId); if (!room) return;
+    const message = parsed.data, key = peer.actor.userId;
+    if (Date.now() - (peer.measureWindow ?? 0) > 10000) { peer.measureWindow = Date.now(); peer.measureCount = 0; }
+    if (++peer.measureCount > 300) return;
+    if (viewedScene(room, peer) !== message.sceneId) return;
+    if (message.type === 'measurement-clear') {
+      const current = room.measurements.get(key);
+      if (!current || current.socket !== socket || current.measurementId !== message.measurementId || message.seq <= current.seq) return;
+      room.measurements.delete(key); measurementBroadcast(room, message.sceneId); return;
+    }
+    const scene = room.data.scenes.find(entry => entry.scene.id === message.sceneId)?.scene;
+    if (!scene || !message.from || !message.to || !message.mode) return;
+    const current = room.measurements.get(key);
+    if (current && (current.socket !== socket || current.measurementId !== message.measurementId && message.seq !== 0 || current.measurementId === message.measurementId && message.seq <= current.seq)) return;
+    const point = value => snapMeasurePoint({ x: Math.max(0, Math.min(scene.width, value.x)), y: Math.max(0, Math.min(scene.height, value.y)) }, scene.gridSize);
+    const next = { measurementId: message.measurementId, sceneId: message.sceneId, userId: peer.actor.userId, name: peer.actor.name, mode: message.mode, from: point(message.from), to: point(message.to), seq: message.seq, socket };
+    room.measurements.set(key, next);
+    const elapsed = Date.now() - (peer.measureSentAt ?? 0);
+    if (elapsed >= 50) { peer.measureSentAt = Date.now(); measurementBroadcast(room, message.sceneId); }
+    else if (!room.measurementTimers.has(message.sceneId)) {
+      const timer = setTimeout(() => { room.measurementTimers.delete(message.sceneId); measurementBroadcast(room, message.sceneId); }, 50 - elapsed);
+      room.measurementTimers.set(message.sceneId, timer);
+    }
+  }
+  function pruneMeasurements(room) {
+    const affected = new Set();
+    for (const [userId, value] of room.measurements) {
+      const owner = peers.get(value.socket);
+      if (!owner || viewedScene(room, owner) !== value.sceneId) { affected.add(value.sceneId); room.measurements.delete(userId); }
+    }
+    for (const sceneId of affected) measurementBroadcast(room, sceneId);
   }
   function cancelMotion(room, motion, reason = 'cancelled') {
     if (room.motions.get(motionKey(motion)) !== motion) return;
@@ -190,6 +258,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     const key = motionKey(message), existing = room.motions.get(key);
     if (message.type === 'motion-start') {
       const scene = authorizedMotionScene(room, peer, message.sceneId), token = scene.tokens.find(token => token.id === message.tokenId);
+      if(!token||!tokenVisible(scene,peer.actor,token)||peer.actor.role!=='master'&&linkedTokens(scene,token).some(t=>!tokenVisible(scene,peer.actor,t)||scene.fog?.enabled&&t.ownerId!==peer.actor.userId))throw new CommandError('forbidden','Нет доступа к выбранной фигуре.');
       if (!token) throw new CommandError('missing', 'Токен больше не существует.');
       if (linkedTokens(scene, token).some(member => member.locked)) throw new CommandError('locked', 'Движение этой фигуры или её группы заблокировано.');
       if (linkedTokens(scene, token)[0].id !== token.id) throw new CommandError('busy', 'Двигайте группу через её основной токен.');
@@ -219,6 +288,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     const savedScene = room.data.scenes.find(entry => entry.scene.id === scene.id).scene;
     motionBroadcast(room, existing, { type: 'motion-committed', motionId: message.motionId, sceneId: scene.id, tokenId: message.tokenId,
       token: savedScene.tokens.find(token => token.id === message.tokenId), tokens: linkedTokens(savedScene, savedScene.tokens.find(token => token.id === message.tokenId)), sceneRevision: savedScene.revision, updatedAt: savedScene.updatedAt });
+    if(savedScene.fog?.enabled) await Promise.all([...peers].filter(([,p])=>p.campaignId===room.data.campaignId).map(([s,p])=>snapshot(s,room,p.actor.userId===peer.actor.userId?message.motionId:undefined)));
   }
   wss.on('connection', (socket, request) => {
     const origin = request.headers.origin;
@@ -227,7 +297,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     socket.on('message', raw => {
       let rejectedCommandId;
       let motionMessage;
-      try { const message = JSON.parse(raw.toString()); if (message.type === 'motion-frame') { void frame(socket, message).catch(() => {}); return; } } catch { /* durable path returns a structured error */ }
+      try { const message = JSON.parse(raw.toString()); if (message.type === 'motion-frame') { void frame(socket, message).catch(() => {}); return; } if (message.type === 'measurement-frame' || message.type === 'measurement-clear') { void measurement(socket, message).catch(() => {}); return; } } catch { /* durable path returns a structured error */ }
       chain = chain.then(async () => {
         if (Date.now() - windowStarted > 10000) { count = 0; windowStarted = Date.now(); }
         if (++count > 80) throw new CommandError('rate', 'Слишком много команд. Подождите несколько секунд.');
@@ -287,14 +357,18 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
             youtubeTitle = status.title;
           }
           const result = applyRoomCommand(room.data, command, actor.actor, actor.roster, { youtubeTitle });
-          if (command.type === 'scene-view') { actor.previewSceneId = result.viewSceneId; invalidateMotions(room); await snapshot(socket, room, command.id); return; }
+          if (command.type === 'scene-view' || command.type === 'scene-view-player') { if(command.type==='scene-view')actor.previewSceneId = result.viewSceneId;else actor.playerViewId=result.playerViewId; invalidateMotions(room); pruneMeasurements(room); await snapshot(socket, room, command.id); return; }
           const receipts = [...room.receipts, { id: command.id, userId: actor.actor.userId }].slice(-1000);
           try { await save({ ...room, data: result.data, receipts }); }
           catch { throw new CommandError('save', 'Сохранение не удалось. Изменение не подтверждено.'); }
           room.data = result.data; room.receipts = receipts;
           if (result.viewSceneId) actor.previewSceneId = result.viewSceneId;
           invalidateMotions(room, command.type === 'grid' ? command.sceneId : undefined);
-          await broadcast(room, command.id);
+          pruneMeasurements(room);
+          if (command.type === 'dice-roll') {
+            const roll = room.data.rolls.find(value => value.id === command.id);
+            await Promise.all([...peers].filter(([,p]) => p.campaignId === room.data.campaignId && (p.actor.userId === actor.actor.userId || canSeeRoll(roll, p.actor))).map(([s,p]) => snapshot(s, room, p.actor.userId === actor.actor.userId ? command.id : undefined)));
+          } else await broadcast(room, command.id);
         });
       }).catch(async error => {
         if (motionMessage) {
@@ -311,7 +385,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
       });
     });
     socket.on('error', () => {});
-    socket.on('close', () => { clearTimeout(helloTimeout); const peer = peers.get(socket); peers.delete(socket); if (peer) { void rooms.get(peer.campaignId)?.then(room => invalidateMotions(room)); announce(peer.campaignId); } });
+    socket.on('close', () => { clearTimeout(helloTimeout); const peer = peers.get(socket); peers.delete(socket); if (peer) { void rooms.get(peer.campaignId)?.then(room => { invalidateMotions(room); const current = room.measurements.get(peer.actor.userId); if (current?.socket === socket) { room.measurements.delete(peer.actor.userId); measurementBroadcast(room, current.sceneId); } }); announce(peer.campaignId); } });
   });
   const heartbeat = setInterval(() => {
     for (const [socket, peer] of peers) if (!peer.backgroundCheck) peer.backgroundCheck = refresh(socket).finally(() => { peer.backgroundCheck = null; });
@@ -321,7 +395,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
   return { port: http.address().port, async close() {
     clearInterval(heartbeat);
     for (const socket of wss.clients) socket.terminate();
-    await Promise.all([...rooms.values()].map(async promise => { const room = await promise.catch(() => null); if (room) await room.queue; }));
+    await Promise.all([...rooms.values()].map(async promise => { const room = await promise.catch(() => null); if (room) { for (const timer of room.measurementTimers.values()) clearTimeout(timer); room.measurementTimers.clear(); await room.queue; } }));
     await new Promise(resolve => wss.close(resolve));
     await library.close();
     await new Promise(resolve => http.close(resolve));

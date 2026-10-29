@@ -327,8 +327,29 @@ test('movement ruler follows token drag without intercepting the existing motion
   assert.equal(view.previews.find(entry => entry[0] === 'move')[1].x, 120);
   assert.equal(view.previews.find(entry => entry[0] === 'move')[1].y, 40);
 });
+test('Escape clears a completed ruler for other participants as well as locally', () => {
+  const sent = [];
+  const view = canvas('measure', { onMeasurement: message => sent.push(message) }), pointer = pointerStage(view);
+  view.effects[2]();
+  view.stage.props.onMouseDown({ target: pointer.stage, evt: { button: 0 } });
+  pointer.point({ x: 200, y: 20 }); view.stage.props.onMouseMove({ evt: {} });
+  view.stage.props.onMouseUp({ evt: {} });
+  assert.ok(sent.some(value => value.type === 'measurement-frame'));
+  assert.equal(sent.at(-1).type, 'measurement-frame');
+  const finalSeq = sent.at(-1).seq;
+  view.listeners.get('keydown')({ code: 'Escape', preventDefault() {} });
+  assert.equal(sent.at(-1).type, 'measurement-clear');
+  assert.ok(sent.at(-1).seq > finalSeq);
+  assert.equal(view.nodes(view.rerender({})).find(node => node.props?.name === 'measurement-shape'), undefined);
+});
 test('native menu scrolling is available while canvas touch gestures remain isolated', () => {
   const view = canvas();
   assert.notEqual(view.tree.props.style.touchAction, 'none');
   assert.equal(view.stage.props.style?.touchAction, 'none');
+});
+
+test('Escape cancels a GM wall gesture without sending an obstacle command',()=>{
+  const sent=[],view=canvas('select',{actor:{userId:'gm',role:'master'},fogEdit:'wall',onFogGesture:(...args)=>sent.push(args)}),pointer=pointerStage(view);view.effects[2]();
+  view.stage.props.onMouseDown({target:pointer.stage,evt:{button:0}});pointer.point({x:200,y:200});view.stage.props.onMouseMove({evt:{}});
+  view.listeners.get('keydown')({code:'Escape',preventDefault(){}});view.stage.props.onMouseUp({evt:{}});assert.deepEqual(sent,[]);
 });

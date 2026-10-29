@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { sceneSchema, tokenSchema, linkedTokens, type TableToken, type TableScene, type TableActor, type TableMember } from '@/lib/table/scene';
 import { sceneSummarySchema, musicStateSchema, type SceneSummary, type RoomCommand, type MusicState } from '@/lib/table/room';
 import { MotionStore, MOTION_INTERVAL, type MotionPoint } from '@/lib/table/motion';
+import type { SharedMeasurement } from '@/lib/table/measurement';
+import { rollRecordSchema, type RollRecord } from '@/lib/table/dice';
 import { HostedConnection, type RoomTransport } from './hosted-connection';
 
 export type CommandInput = RoomCommand extends infer C ? C extends RoomCommand ? Omit<C, 'id' | 'baseRevision' | 'sceneId' | 'expectedRoomRevision'> : never : never;
@@ -14,6 +16,9 @@ export function useTableRoom(campaignId: string) {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [scene, setScene] = useState<TableScene | null>(null);
   const [peers, setPeers] = useState<TableActor[]>([]);
+  const [measurements, setMeasurements] = useState<SharedMeasurement[]>([]);
+  const [rolls, setRolls] = useState<RollRecord[]>([]);
+  const [playerViewId, setPlayerViewId] = useState<string | null>(null);
   const [scenes, setScenes] = useState<SceneSummary[]>([]), [activeSceneId, setActiveSceneId] = useState('');
   const [music, setMusic] = useState<MusicState>({ tracks: [], currentTrackId: null, playing: false, positionSeconds: 0, startedAt: null });
   const roomRevisionRef = useRef(0);
@@ -25,6 +30,7 @@ export function useTableRoom(campaignId: string) {
   const [retry, setRetry] = useState(0);
   const [libraryVersion, setLibraryVersion] = useState(0);
   const sceneRef = useRef<TableScene | null>(null), socketRef = useRef<RoomTransport | null>(null);
+  const measurementFrame = useRef<Record<string, unknown> | null>(null), measurementTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingRef = useRef<string | null>(null);
   const [motionPending, setMotionPending] = useState(false);
   const [motionStore] = useState(() => new MotionStore());
@@ -47,7 +53,7 @@ export function useTableRoom(campaignId: string) {
     }
     async function connect() {
       if (stopped) return;
-      setConnection('connecting'); setEntryError(''); setPending(false); setOptimistic(null); pendingRef.current = null; resetMotions();
+      setConnection('connecting'); setEntryError(''); setPending(false); setOptimistic(null); pendingRef.current = null; resetMotions(); setMeasurements([]);
       try {
         const value = await credentials(); if (stopped) return;
         setBootstrap(value);
@@ -63,8 +69,12 @@ export function useTableRoom(campaignId: string) {
               const received = sceneSchema.parse(message.scene);
               const summaries = sceneSummarySchema.array().parse(message.scenes);
               setMusic(musicStateSchema.parse(message.music ?? { tracks: [], currentTrackId: null, playing: false, positionSeconds: 0, startedAt: null }));
+              setRolls(rollRecordSchema.array().parse(message.rolls ?? []));
+              setPlayerViewId(message.playerViewId ?? null);
               setScenes(summaries); setActiveSceneId(message.activeSceneId); roomRevisionRef.current = message.roomRevision;
-              if (sceneRef.current?.id !== received.id) { pendingRef.current = null; setPending(false); setOptimistic(null); resetMotions(); }
+              if (sceneRef.current?.id !== received.id || received.fog?.enabled) { pendingRef.current = null; setPending(false); setOptimistic(null); resetMotions(); }
+              if (Array.isArray(message.measurements)) setMeasurements(message.measurements);
+              else if (sceneRef.current?.id !== received.id) setMeasurements([]);
               if (message.commandId && localMotions.current.has(message.commandId)) { const motion = localMotions.current.get(message.commandId)!; clearTimeout(motion.timeout); localMotions.current.delete(message.commandId); motionStore.cancelMotion(motion.motionId); setMotionPending(localMotions.current.size > 0); }
               sceneRef.current = received; setScene(received); setPeers(message.peers);
               setBootstrap(previous => previous ? { ...previous, actor: message.actor, roster: message.roster } : previous);
@@ -94,6 +104,7 @@ export function useTableRoom(campaignId: string) {
               if (own) { clearTimeout(own.timeout); localMotions.current.delete(message.motionId); setMotionPending(localMotions.current.size > 0); }
               if (message.type === 'motion-rejected' && own) setError(message.message);
             } else if (message.type === 'presence') setPeers(message.peers);
+            else if (message.type === 'measurement-state' && message.sceneId === sceneRef.current?.id) setMeasurements(message.measurements);
             else if (message.type === 'library-changed') setLibraryVersion(value => value + 1);
             else if (message.type === 'error') {
               setError(message.message);
@@ -105,7 +116,7 @@ export function useTableRoom(campaignId: string) {
         socket.onclose = () => {
           clearInterval(refresh);
           if (stopped) return;
-          setConnection('offline'); setPending(false); setOptimistic(null); pendingRef.current = null; resetMotions();
+          setConnection('offline'); setMeasurements([]); setPending(false); setOptimistic(null); pendingRef.current = null; resetMotions();
           timer = setTimeout(() => void connect(), Math.min(8000, 1000 * 2 ** attempt++));
         };
         refresh = setInterval(() => { void credentials().then(next => {
@@ -187,9 +198,24 @@ export function useTableRoom(campaignId: string) {
     const id = crypto.randomUUID(); pendingRef.current = id; setPending(true); setError('');
     if (input.type === 'move') setOptimistic({ tokenId: input.tokenId, x: input.x, y: input.y });
     socket.send(JSON.stringify({ type: 'command', command: { ...input, id, baseRevision: current.revision, sceneId: current.id,
-      ...(input.type.startsWith('scene-') || input.type.startsWith('music-') ? { expectedRoomRevision: roomRevisionRef.current } : {}) } }));
+      ...(input.type.startsWith('scene-') || input.type.startsWith('music-') || input.type==='dice-roll' ? { expectedRoomRevision: roomRevisionRef.current } : {}) } }));
     return true;
   }, []);
-  return { bootstrap, scene, scenes, activeSceneId, peers, music, connection, error, entryError, pending, optimistic, send, libraryVersion, motionStore, motionPending, startMotion, previewMotion, endMotion,
+  const sendMeasurement = useCallback((message: Record<string, unknown>) => {
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    if (message.type === 'measurement-clear' || message.seq === 0) {
+      clearTimeout(measurementTimer.current); measurementTimer.current = undefined;
+      measurementFrame.current = null; socket.send(JSON.stringify(message)); return;
+    }
+    measurementFrame.current = message;
+    if (!measurementTimer.current) measurementTimer.current = setTimeout(() => {
+      measurementTimer.current = undefined;
+      const latest = measurementFrame.current; measurementFrame.current = null;
+      const current = socketRef.current; if (latest && current?.readyState === WebSocket.OPEN) current.send(JSON.stringify(latest));
+    }, 50);
+  }, []);
+  useEffect(() => () => { clearTimeout(measurementTimer.current); measurementTimer.current = undefined; measurementFrame.current = null; }, []);
+  return { bootstrap, scene, scenes, activeSceneId, peers, measurements, sendMeasurement, music, rolls, playerViewId, connection, error, entryError, pending, optimistic, send, libraryVersion, motionStore, motionPending, startMotion, previewMotion, endMotion,
     clearError: () => setError(''), reconnect: () => setRetry(value => value + 1) };
 }

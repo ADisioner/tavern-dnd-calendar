@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { projectScene } from './fog.ts';
+import { maskedMap } from './fog-map.ts';
 import { MAX_ASSET_BYTES, type LibraryAsset } from './assets.ts';
 import { validateAssetUpload } from './asset-validation.ts';
 import { CommandError } from './scene.ts';
@@ -30,10 +32,14 @@ export async function hostedLibrary(request: Request, env: HostedEnv) {
     if (!visible(row, actor)) {
       const { state } = await readHostedRoom(env, actor);
       const readable = state.data.scenes.filter(entry => actor.actor.role === 'master' || entry.scene.id === state.data.activeSceneId);
-      if (!readable.some(({ scene }) => scene.mapAssetId === id || scene.tokens.some(token => token.assetId === id))) throw new CommandError('forbidden', 'Файл недоступен.');
+      if (!readable.some(({ scene }) => scene.mapAssetId === id || projectScene(scene,actor.actor).tokens.some(token => token.assetId === id))) throw new CommandError('forbidden', 'Файл недоступен.');
     }
     const asset = JSON.parse(row.metadata) as LibraryAsset, object = await env.BUCKET.get('test-vtt/' + id);
     if (!object) throw new CommandError('missing', 'Файл не найден.');
+    if(actor.actor.role!=='master'){
+      const {state}=await readHostedRoom(env,actor);const map=state.data.scenes.find(entry=>entry.scene.id===state.data.activeSceneId&&entry.scene.mapAssetId===id&&entry.scene.fog?.enabled)?.scene;
+      if(map){const bytes=maskedMap(new Uint8Array(await object.arrayBuffer()),asset.mime,map,actor.actor,id);return new Response(bytes as BodyInit,{headers:{...headers,'Content-Type':'image/png'}});}
+    }
     return new Response(object.body, { headers: { ...headers, 'Content-Type': asset.mime, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(asset.name)}` } });
   }
   let asset: LibraryAsset;

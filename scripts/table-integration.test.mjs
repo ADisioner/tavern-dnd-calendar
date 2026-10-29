@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
 
-const BASE = 'http://127.0.0.1:5173';
+const BASE = process.env.TABLE_TEST_BASE ?? 'http://127.0.0.1:5173';
 const fixturePath = path.resolve('outputs/table-qa.json');
 const fresh = () => ({ id: '', cookie: '', login: '', password: '' });
 let clients = [fresh(), fresh(), fresh()], campaign = '', sockets = [];
@@ -32,7 +32,7 @@ function cleanup() {
   const ids = clients.map(c => c.id).filter(id => /^[a-f0-9-]{36}$/.test(id));
   let sql = '';
   if (/^[a-f0-9-]{36}$/.test(campaign)) {
-    if (process.argv.includes('--hosted')) for (const table of ['test_table_rooms','test_table_motions','test_table_peers','test_table_assets']) sql += `DELETE FROM ${table} WHERE campaign_id='${campaign}';\n`;
+    if (process.argv.includes('--hosted')) for (const table of ['test_table_rooms','test_table_motions','test_table_measurements','test_table_peers','test_table_assets']) sql += `DELETE FROM ${table} WHERE campaign_id='${campaign}';\n`;
     sql += `DELETE FROM availability WHERE campaign_id='${campaign}'; DELETE FROM sessions WHERE campaign_id='${campaign}'; DELETE FROM members WHERE campaign_id='${campaign}'; DELETE FROM campaigns WHERE id='${campaign}';\n`;
   }
   for (const id of ids) {

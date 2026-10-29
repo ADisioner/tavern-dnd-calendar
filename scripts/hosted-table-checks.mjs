@@ -11,7 +11,7 @@ export async function hostedChecks(base, clients, campaign) {
   }
   const poll = (who, id, extra = '') => request(who, `/api/test/table?campaign=${campaign}&client=${id}${extra}`);
   const send = (who, id, message, preview) => request(who, '/api/test/table', 'POST', { campaignId: campaign, clientId: id, message, preview });
-  const library = `/api/table/library?campaign=${campaign}`;
+  const library = `/api/table/library?campaign=${campaign}&storage=hosted`;
   try {
     assert.equal((await poll(2, viewerId)).status, 403);
     let packet = await poll(1, clientId), scene = packet.body.events.find(e => e.type === 'snapshot').scene;
@@ -23,6 +23,15 @@ export async function hostedChecks(base, clients, campaign) {
     assert.equal(drawn.status, 200);
     scene = drawn.body.events.find(e => e.type === 'snapshot').scene;
     assert.deepEqual(scene.drawings.find(value => value.id === longDrawing.id), longDrawing);
+    const measurementId = crypto.randomUUID(), measurement = { type: 'measurement-frame', measurementId, sceneId: scene.id, seq: 0, mode: 'sphere', from: { x: 200, y: 200 }, to: { x: 360, y: 200 } };
+    const measured = await send(1, clientId, measurement);
+    assert.equal(measured.status, 200);
+    assert.ok(measured.body.events.some(event => event.type === 'measurement-state' && event.measurements?.some(value => value.measurementId === measurementId)));
+    const shared = await poll(0, viewerId);
+    assert.ok(shared.body.events.some(event => event.type === 'measurement-state' && event.measurements?.some(value => value.measurementId === measurementId && value.mode === 'sphere')));
+    const cleared = await send(1, clientId, { type: 'measurement-clear', measurementId, sceneId: scene.id, seq: 1 });
+    assert.ok(cleared.body.events.some(event => event.type === 'measurement-state' && !event.measurements?.some(value => value.measurementId === measurementId)));
+    console.log('PASS: hosted measurement insert, same-scene query, and clear.');
     const oversized = await send(1, clientId, { type: 'command', padding: 'я'.repeat(33000) });
     assert.equal(oversized.status, 413);
     const token = scene.tokens[0], motionId = crypto.randomUUID(), identity = { motionId, sceneId: scene.id, tokenId: token.id };
@@ -99,6 +108,13 @@ export async function hostedChecks(base, clients, campaign) {
     const malicious = await poll(1, clientId, `&preview=${hidden.id}&scene=${hidden.id}&version=${prepare.body.version}`);
     assert.equal(JSON.stringify(malicious.body).includes('HTTP private preparation'), false);
     assert.notEqual(malicious.body.events.find(e => e.type === 'snapshot').scene.id, hidden.id);
+    const privateMeasurementId = crypto.randomUUID();
+    const privateMeasurement = await send(0, viewerId, { type: 'measurement-frame', measurementId: privateMeasurementId, sceneId: hidden.id, seq: 0, mode: 'cone', from: { x: 200, y: 200 }, to: { x: 360, y: 200 } }, hidden.id);
+    assert.ok(privateMeasurement.body.events.some(event => event.type === 'measurement-state' && event.measurements?.some(value => value.measurementId === privateMeasurementId)));
+    const publicMeasurements = await poll(1, clientId);
+    assert.equal(publicMeasurements.body.events.some(event => event.type === 'measurement-state' && event.measurements?.some(value => value.measurementId === privateMeasurementId)), false);
+    console.log('PASS: hosted preparation measurement stays private.');
+    if (process.argv.includes('--measurements-only')) return;
 
     const png = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'));
     const uploaded = await request(1, library + '&name=QA.png&kind=token&scope=personal', 'POST', png);

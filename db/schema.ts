@@ -36,6 +36,10 @@ export const testTableMotions = sqliteTable('test_table_motions', {
   x: integer('x').notNull(), y: integer('y').notNull(), expires: integer('expires').notNull(), status: text('status').notNull(),
   result: text('result'),
 }, t => [primaryKey({ columns: [t.campaignId, t.sceneId, t.tokenId] })]);
+export const testTableMeasurements = sqliteTable('test_table_measurements', {
+  campaignId: text('campaign_id').notNull(), userId: text('user_id').notNull(), clientId: text('client_id').notNull(), sceneId: text('scene_id').notNull(),
+  measurementId: text('measurement_id').notNull(), payload: text('payload').notNull(), seq: integer('seq').notNull(), updatedAt: integer('updated_at').notNull(),
+}, t => [primaryKey({ columns: [t.campaignId, t.userId] })]);
 export const testTablePeers = sqliteTable('test_table_peers', {
   clientId: text('client_id').primaryKey(), campaignId: text('campaign_id').notNull(), userId: text('user_id').notNull(), expires: integer('expires').notNull(),
 });

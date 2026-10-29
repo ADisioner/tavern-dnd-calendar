@@ -1,12 +1,13 @@
 'use client';
 export type RoomTransport = { readyState: number; bufferedAmount: number; send(data: string): void; close(): void;
   onopen: ((event: Event) => void) | null; onmessage: ((event: MessageEvent) => void) | null; onerror: ((event: Event) => void) | null; onclose: ((event: CloseEvent) => void) | null };
-type Packet = { version?: number; events?: Record<string, unknown>[]; previewSceneId?: string; error?: string };
+type Packet = { version?: number; events?: Record<string, unknown>[]; previewSceneId?: string; playerViewId?: string | null; error?: string };
 export class HostedConnection implements RoomTransport {
   readyState = 0; bufferedAmount = 0;
   onopen: RoomTransport['onopen'] = null; onmessage: RoomTransport['onmessage'] = null; onerror: RoomTransport['onerror'] = null; onclose: RoomTransport['onclose'] = null;
   private clientId = crypto.randomUUID(); private socket: WebSocket | null = null; private closed = false; private http = false;
   private version = -1; private sceneId = ''; private preview: string | undefined; private generation = 0;
+  private playerViewId: string | null = null;
   private controller = new AbortController(); private timer?: ReturnType<typeof setTimeout>; private upgradeTimer?: ReturnType<typeof setTimeout>;
   private queue = Promise.resolve(); private sendingFrame = false; private frame: Record<string,unknown> | null = null;
   private seen = new Map<string, string>();
@@ -42,7 +43,7 @@ export class HostedConnection implements RoomTransport {
   private consume(packet: Packet) {
     // Only a snapshot confirms that this client has seen the whole room version.
     // A frame response may observe a concurrent command without carrying its state.
-    if (typeof packet.version === 'number' && packet.events?.some(event => event.type === 'snapshot')) this.version = Math.max(this.version, packet.version);
+    if (typeof packet.version === 'number' && packet.events?.some(event => event.type === 'snapshot')) this.version = packet.version;
     for (const event of packet.events ?? []) this.deliver(event);
   }
   private fallback() {
@@ -53,7 +54,7 @@ export class HostedConnection implements RoomTransport {
     if (this.closed || !this.http) return;
     const generation = this.generation;
     try {
-      const query = new URLSearchParams({ campaign: this.campaignId, client: this.clientId, version: String(this.version), scene: this.sceneId, ...(this.preview ? { preview: this.preview } : {}) });
+      const query = new URLSearchParams({ campaign: this.campaignId, client: this.clientId, version: String(this.version), scene: this.sceneId, ...(this.preview ? { preview: this.preview } : {}), ...(this.playerViewId?{viewer:this.playerViewId}:{}) });
       const response = await fetch('/api/test/table?' + query, { signal: this.controller.signal, cache: 'no-store' });
       const packet = await response.json() as Packet;
       if (!response.ok) throw new Error(packet.error);
@@ -66,10 +67,11 @@ export class HostedConnection implements RoomTransport {
   private async post(message: Record<string,unknown>) {
     if (this.closed) return;
     const response = await fetch('/api/test/table', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: this.controller.signal,
-      body: JSON.stringify({ clientId: this.clientId, campaignId: this.campaignId, preview: this.preview, message }) });
+      body: JSON.stringify({ clientId: this.clientId, campaignId: this.campaignId, preview: this.preview, viewer:this.playerViewId, message }) });
     const packet = await response.json() as Packet;
     if (this.closed) return;
     if (packet.previewSceneId !== undefined) this.preview = packet.previewSceneId;
+    if (packet.playerViewId !== undefined) this.playerViewId = packet.playerViewId;
     this.consume(packet); if (!response.ok) throw new Error(packet.error);
   }
   send(data: string) {

@@ -11,7 +11,7 @@ async function handle(request: NextRequest) {
   try {
     if (request.method !== 'GET' && request.headers.get('origin') !== request.nextUrl.origin)
       return NextResponse.json({ error: 'Запрос должен исходить со страницы стола.' }, { status: 403, headers });
-    if (!env.TABLE_LOCAL_SECRET || !env.TABLE_LOCAL_WS_URL) {
+    if (!env.TABLE_LOCAL_SECRET || !env.TABLE_LOCAL_WS_URL || request.nextUrl.searchParams.get('storage')==='hosted') {
       try { return await hostedLibrary(request, env); }
       catch (error) { const value = hostedError(error); return NextResponse.json({ error: value.message }, { status: value.code === 'auth' ? 401 : value.code === 'forbidden' ? 403 : value.code === 'limit' ? 413 : 400, headers }); }
     }
