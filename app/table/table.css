@@ -29,6 +29,7 @@
 .table-tool[aria-pressed="true"]{border-color:#8f78bd;background:#343048;color:#dac4ff;box-shadow:inset 3px 0 #a78bfa}
 .table-tool-separator{width:24px;height:1px;margin:3px 0;background:#53576a}
 .table-music-panel{position:absolute;z-index:13;top:14px;right:76px;display:flex;width:min(370px,calc(100% - 100px));max-height:calc(100% - 28px);flex-direction:column;gap:10px;overflow:auto;padding:12px;border:1px solid #5b5140;border-radius:8px;background:#202525f7;box-shadow:0 12px 36px #0009;backdrop-filter:blur(8px)}
+.table-music-panel[hidden]{display:none}
 .table-music-panel>header{position:sticky;top:-12px;z-index:1;display:flex;align-items:center;justify-content:space-between;margin:-12px -12px 0;padding:4px 6px 4px 12px;border-bottom:1px solid var(--table-line);background:var(--table-panel)}
 .table-music-panel>header strong{display:flex;align-items:center;gap:8px;color:#ead8b5;font-family:var(--serif);font-weight:500}
 .table-music-player{display:grid;gap:8px}.table-music-player iframe{display:block;width:100%;min-height:200px;aspect-ratio:16/9;border:0;border-radius:4px;background:#101010}
@@ -201,3 +202,4 @@
 .token-context-menu .token-status-tab{padding-inline:calc(10px * var(--token-menu-scale))}.token-condition-panel{margin-top:calc(7px * var(--token-menu-scale))}
 .token-menu-popup .token-condition-option{gap:calc(8px * var(--token-menu-scale));min-height:calc(36px * var(--token-menu-scale))}.token-condition-option input{width:calc(18px * var(--token-menu-scale));height:calc(18px * var(--token-menu-scale))}.token-condition-option>.token-condition-icon{width:calc(20px * var(--token-menu-scale));height:calc(20px * var(--token-menu-scale))}
 .token-menu-popup .token-condition-level{min-height:calc(42px * var(--token-menu-scale));margin-block:calc(6px * var(--token-menu-scale))}.token-condition-level select{min-width:calc(64px * var(--token-menu-scale));min-height:calc(36px * var(--token-menu-scale));padding:calc(5px * var(--token-menu-scale))}
+
