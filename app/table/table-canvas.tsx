@@ -8,11 +8,13 @@ import { boundedGroupPoint, canMoveToken, linkedTokens, type TableActor, type Ta
 import { assetUrl } from '@/lib/table/assets';
 import { boundedPoint, type MotionStore } from '@/lib/table/motion';
 import { tokensInRect } from '@/lib/table/selection';
+import { areaPoints, distanceFeet, snapMeasurePoint, type AreaMode, type MeasureMode } from '@/lib/table/measurement';
 import TokenContextMenu, { tokenMenuPlacement, type TokenActionHandler } from './token-context-menu';
 import { CONDITIONS } from '@/lib/table/conditions';
 
 type CanvasDrawing = { id: string; color: string; width: number; points: number[] };
-type CanvasGesture = { kind: 'draw'; drawing: CanvasDrawing } | { kind: 'select'; from: Point; to: Point; additive: boolean };
+type MeasureGesture = { kind: 'measure'; mode: AreaMode; from: Point; to: Point; committed?: boolean };
+type CanvasGesture = { kind: 'draw'; drawing: CanvasDrawing } | { kind: 'select'; from: Point; to: Point; additive: boolean } | MeasureGesture;
 
 function TokenPortrait({ campaignId, assetId, radius }: { campaignId: string; assetId: string; radius: number }) {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -26,14 +28,16 @@ function TokenPortrait({ campaignId, assetId, radius }: { campaignId: string; as
   return <Group listening={false} clipFunc={ctx => { ctx.arc(0, 0, radius, 0, Math.PI * 2); }}><CanvasImage image={image} x={-radius} y={-radius} width={radius * 2} height={radius * 2} crop={{ x: (image.width - edge) / 2, y: (image.height - edge) / 2, width: edge, height: edge }}/></Group>;
 }
 
+function formatFeet(value: number) { return `${Number.isInteger(value) ? value : value.toFixed(1)} ft`; }
+
 export type TableCanvasProps = {
-  scene: TableScene; actor: TableActor; selectedId: string | null; selectedIds?: string[]; tool: 'select' | 'pan' | 'draw' | 'erase'; snap: boolean;
+  scene: TableScene; actor: TableActor; selectedId: string | null; selectedIds?: string[]; tool: 'select' | 'pan' | 'draw' | 'erase' | 'measure'; measureMode?: MeasureMode; snap: boolean;
   pending: boolean; onSelect: (id: string | null, additive?: boolean) => void; onSelectMany?: (ids: string[], additive?: boolean) => void; onMove: (token: TableToken, point: Point) => boolean;
   brushColor?: string; brushWidth?: number; onDraw?: (drawing: CanvasDrawing) => void; onErase?: (drawingId: string) => void;
   onTokenAction?: TokenActionHandler;
   motionStore: MotionStore; onMotionStart: (token: TableToken) => boolean; onMotionPreview: (token: TableToken, point: Point, duration?: number) => boolean; onMotionEnd: (tokenId: string) => void;
 };
-export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
+export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, measureMode = 'line', snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null), stageRef = useRef<Konva.Stage>(null);
   const [viewport, setViewport] = useState({ width: 800, height: 600 });
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 0.5 });
@@ -41,9 +45,13 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
   const [space, setSpace] = useState(false), [pointer, setPointer] = useState<Point | null>(null);
   const [middlePan, setMiddlePan] = useState(false);
   const previousViewport = useRef<{ width: number; height: number } | null>(null), touchRef = useRef<{ distance: number; point: Point } | null>(null);
-  const tokenNodes = useRef(new Map<string, Konva.Group>()), dragging = useRef(new Set<string>());
+  const tokenNodes = useRef(new Map<string, Konva.Group>()), dragging = useRef(new Set<string>()), dragStarts = useRef(new Map<string, Point>());
   const gestureRef = useRef<CanvasGesture | null>(null), cameraOverride = useRef(false), pinching = useRef(false);
   const [gesture, setGesture] = useState<CanvasGesture | null>(null);
+  const [measurePreview, setMeasurePreview] = useState<MeasureGesture | null>(null);
+  const measurePreviewRef = useRef<MeasureGesture | null>(null);
+  const updateMeasurePreview = (next: MeasureGesture | null) => { measurePreviewRef.current = next; setMeasurePreview(next); };
+  const [movementPreview, setMovementPreview] = useState<{ tokenId: string; from: Point; to: Point } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [resizePreview, setResizePreview] = useState<{ id: string; version: number; size: number; committed: boolean } | null>(null);
   const primary = scene.tokens.find(token => token.id === (selectedId ?? selectedIds?.at(-1)));
@@ -67,6 +75,10 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     if (tool === 'draw' && onDraw) {
       const point = drawingPoint(pointer);
       next = { kind: 'draw', drawing: { id: crypto.randomUUID(), color: brushColor, width: brushWidth, points: [point.x, point.y] } };
+    } else if (tool === 'measure' && measureMode !== 'move') {
+      const point = snapMeasurePoint(pointer, scene.gridSize);
+      next = { kind: 'measure', mode: measureMode, from: point, to: point };
+      updateMeasurePreview(null);
     } else if (tool === 'select' && blank) next = { kind: 'select', from: pointer, to: pointer, additive };
     else return;
     gestureRef.current = next; setGesture(next);
@@ -80,7 +92,8 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       // Keep the draft within the same validated point limit as a shared stroke.
       if (points.length >= 2048 || (points.at(-2) === bounded.x && points.at(-1) === bounded.y)) return;
       next = { kind: 'draw', drawing: { ...current.drawing, points: [...points, bounded.x, bounded.y] } };
-    } else next = { ...current, to: point };
+    } else if (current.kind === 'measure') next = { ...current, to: snapMeasurePoint(point, scene.gridSize) };
+    else next = { ...current, to: point };
     gestureRef.current = next; setGesture(next);
   };
   const finishGesture = () => {
@@ -89,6 +102,8 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     if (current.kind === 'draw') {
       const drawing = current.drawing;
       onDraw?.({ ...drawing, points: drawing.points.length === 2 ? [...drawing.points, ...drawing.points] : drawing.points });
+    } else if (current.kind === 'measure') {
+      if (current.from.x !== current.to.x || current.from.y !== current.to.y) updateMeasurePreview({ ...current, committed: true });
     } else if (Math.hypot(current.to.x - current.from.x, current.to.y - current.from.y) * camera.scale < 3) {
       if (!current.additive) onSelect(null);
     } else {
@@ -124,6 +139,9 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     const down = (event: KeyboardEvent) => {
       if (document.querySelector('dialog[open]')) return;
       if (event.target instanceof HTMLElement && /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+      if (event.code === 'Escape' && (gestureRef.current?.kind === 'measure' || measurePreviewRef.current)) {
+        event.preventDefault(); cancelGesture(); updateMeasurePreview(null); return;
+      }
       if (event.code === 'Space') {
         event.preventDefault(); cameraOverride.current = true; cancelGesture(); finishTokenDrags(); setSpace(true);
       }
@@ -143,7 +161,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     window.addEventListener('mouseup', finish); window.addEventListener('blur', finish);
     return () => { window.removeEventListener('mouseup', finish); window.removeEventListener('blur', finish); };
   }, [middlePan]);
-  useEffect(() => { cancelGesture(); }, [tool, scene.id]);
+  useEffect(() => { cancelGesture(); updateMeasurePreview(null); setMovementPreview(null); dragStarts.current.clear(); }, [tool, measureMode, scene.id]);
   const fit = useCallback(() => setCamera(fitCamera(scene, viewport)), [scene, viewport]);
   const zoom = (factor: number) => setCamera(current => zoomAt(current, { x: viewport.width / 2, y: viewport.height / 2 }, factor));
   const grid: React.ReactNode[] = [];
@@ -152,6 +170,15 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     for (let y = 0; y <= scene.height; y += scene.gridSize) grid.push(<Line key={'y' + y} points={[0, y, scene.width, y]} stroke="#decea1" opacity={0.18} strokeWidth={1 / camera.scale} listening={false}/>);
   }
   const panning = tool === 'pan' || space || middlePan;
+  const activeMeasure = gesture?.kind === 'measure' ? gesture : measurePreview;
+  const measurePoints = activeMeasure ? areaPoints(activeMeasure.mode, activeMeasure.from, activeMeasure.to, scene.gridSize) : [];
+  const measureDistance = activeMeasure ? distanceFeet(activeMeasure.from, activeMeasure.to, scene.gridSize) : 0;
+  const squareSide = activeMeasure?.mode === 'square' && measurePoints.length > 1
+    ? Math.abs(measurePoints[1].x - measurePoints[0].x) / scene.gridSize * 5 : measureDistance;
+  const measureLabel = activeMeasure?.mode === 'sphere' ? `–°—Ñ–µ—Ä–∞ ¬∑ —Ä–∞–¥–∏—É—Å ${formatFeet(measureDistance)}`
+    : activeMeasure?.mode === 'square' ? `–ö–≤–∞–¥—Ä–∞—Ç ¬∑ —Å—Ç–æ—Ä–æ–Ω–∞ ${formatFeet(squareSide)}`
+      : activeMeasure?.mode === 'cone' ? `–ö–æ–Ω—É—Å ¬∑ ${formatFeet(measureDistance)}` : formatFeet(measureDistance);
+  const measureLabelWidth = Math.max(68, measureLabel.length * 6.2 + 16);
   useEffect(() => {
     let frame = 0, firstFrame = true; const animated = new Set<string>();
     function animate() {
@@ -222,44 +249,15 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         if (previous) setCamera(current => { const next = zoomAt(current, previous.point, distance / previous.distance); return { ...next, x: next.x + point.x - previous.point.x, y: next.y + point.y - previous.point.y }; });
         touchRef.current = { point, distance };
       }} onTouchEnd={event => { if (!pinching.current) finishGesture(); touchRef.current = null; if (event.evt.touches.length === 0) pinching.current = false; }} onTouchCancel={() => { cancelGesture(); pinching.current = false; touchRef.current = null; }}>
-      <Layer><CanvasImage image={map ?? undefined} x={map ? (scene.width - map.width * Math.min(scene.width / map.width, scene.height / map.height)) / 2 : 0} y={map ? (scene.height - map.height * Math.min(scene.width / map.width, scene.height / map.height)) / 2 : 0} width={map ? map.width * Math.min(scene.width / map.width, scene.height / map.height) : scene.width} height={map ? map.height * Math.min(scene.width / map.width, scene.height / map.height) : scene.height} listening={false}/>{grid}</Layer>
-      <Layer>{(scene.drawings ?? []).map(drawing => <Line key={drawing.id} points={drawing.points} stroke={drawing.color} strokeWidth={drawing.width} lineCap="round" lineJoin="round" listening={tool === 'erase' && !panning && !pending} hitStrokeWidth={Math.max(drawing.width, 12 / camera.scale)}
-        onMouseDown={event => { if (event.evt.button === 0) { event.cancelBubble = true; eraseDrawing(drawing.id); } }}
-        onTouchStart={event => { if (event.evt.touches.length === 1) { event.cancelBubble = true; eraseDrawing(drawing.id); } }}/>) }
-        {gesture?.kind === 'draw' && <Line points={gesture.drawing.points.length === 2 ? [...gesture.drawing.points, ...gesture.drawing.points] : gesture.drawing.points} stroke={gesture.drawing.color} strokeWidth={gesture.drawing.width} lineCap="round" lineJoin="round" listening={false}/>}</Layer>
-      <Layer>{scene.tokens.slice().sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0)).map(sourceToken => {
-        const token = previewToken(sourceToken);
-        const radius = token.size * scene.gridSize * 0.42, selected = selectedSet.has(token.id);
-        const allowed = movable(token);
-        const displayed = resizePreview?.id === token.id ? boundedPoint(token, scene.gridSize, token) : motionStore.position(token.id, token);
-        return <Group ref={node => { if (node) tokenNodes.current.set(token.id, node); else tokenNodes.current.delete(token.id); }} key={token.id} id={token.id} x={displayed.x} y={displayed.y} listening={tool === 'select' || panning} draggable={allowed && tool === 'select' && !panning && !pending}
-          onClick={event => { event.cancelBubble = true; if (tool === 'select' && !cameraActive() && event.evt.button !== 1) onSelect(token.id, event.evt.shiftKey); }} onTap={() => { if (tool === 'select' && !cameraActive()) onSelect(token.id); }}
-          onDragStart={event => { event.cancelBubble = true; if (!allowed || tool !== 'select' || cameraActive() || pending) { event.target.stopDrag(); return; } if (!selected) onSelect(token.id, event.evt?.shiftKey); if (onMotionStart(token)) dragging.current.add(token.id); else { event.target.stopDrag(); event.target.position({ x: token.x, y: token.y }); } }}
-          onDragMove={event => { event.cancelBubble = true; if (!dragging.current.has(token.id)) return; const point = boundedGroupPoint(scene, token, { x: event.target.x(), y: event.target.y() }); event.target.position(point); onMotionPreview(token, point); }}
-          onDragEnd={event => { event.cancelBubble = true; if (!dragging.current.delete(token.id)) return; const point = boundedGroupPoint(scene, token, snapCenter({ x: event.target.x(), y: event.target.y() }, scene.gridSize, snap && !event.evt?.ctrlKey && !event.evt?.altKey)); onMotionPreview(token, point, 85); onMotionEnd(token.id); }}>
-          <Circle name="motion-indicator" visible={false} radius={radius + 6} stroke="#87b2c2" strokeWidth={3 / camera.scale} listening={false}/>
-          <Text name="motion-label" visible={false} text="" x={-80} y={-radius - 27} width={160} align="center" fontSize={13} fill="#b7deeb" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>
-          {selected && <Circle radius={radius + 7} stroke="#efd18b" strokeWidth={2.5 / camera.scale} dash={[7 / camera.scale, 4 / camera.scale]} listening={false}/>}
-          <Group rotation={token.rotation ?? 0}>{token.assetId ? <><Circle radius={radius} fill="#252627" shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/><TokenPortrait campaignId={scene.campaignId} assetId={token.assetId} radius={radius}/></> : <><Circle radius={radius} fill="#252627" stroke={token.color} strokeWidth={4} shadowColor="#000000" shadowBlur={8} shadowOpacity={0.6}/>
-          <Circle radius={radius - 5} fill={token.color} opacity={0.16} listening={false}/>
-          <Text text={token.name.match(/^–ü—Ä–æ—Ç–∏–≤–Ω–∏–∫ (\d+)$/)?.[1] ?? token.name.slice(0, 2).toLocaleUpperCase('ru-RU')} x={-radius} y={-radius * 0.44} width={radius * 2} fontSize={radius * 0.72} align="center" fill="#fff0d2" fontStyle="bold" listening={false}/></>}</Group>
-          {token.showLabel !== false && (token.showLabel || selected || token.ownerId) && <Text text={token.name} x={-70} y={radius + 8} width={140} fontSize={14} align="center" fill="#f7e8ca" stroke="#1c2020" strokeWidth={3} fillAfterStrokeEnabled listening={false}/>}
-          {!!token.statuses?.length && <Group name="condition-badges" listening={false} x={radius - 9 / camera.scale} y={-radius - 9 / camera.scale} scaleX={1 / camera.scale} scaleY={1 / camera.scale}>
-            {token.statuses.slice(0, 4).map((status, index) => <Group key={status} x={(index % 2) * 21} y={Math.floor(index / 2) * 21}>
-              <Circle x={10} y={10} radius={9} fill="#202525" stroke={CONDITIONS[status].color} strokeWidth={1.5}/>
-              <Path data={CONDITIONS[status].icon} x={3} y={3} scaleX={7 / 12} scaleY={7 / 12} stroke={CONDITIONS[status].color} strokeWidth={2} lineCap="round" lineJoin="round" fillEnabled={false}/>
-            </Group>)}
-            {token.statuses.length > 4 && <Text text={`+${token.statuses.length - 4}`} x={0} y={43} width={42} height={15} align="center" fontSize={11} fill="#f7e8ca" stroke="#202525" strokeWidth={3} fillAfterStrokeEnabled/>}
-          </Group>}
-          {token.ownerId && <Circle radius={5} x={radius * 0.75} y={-radius * 0.7} fill="#a9c496" stroke="#202723" strokeWidth={2} listening={false}/>}
-        </Group>;
-      })}</Layer>
-      <Layer listening={false}>{gesture?.kind === 'select' && <Rect x={Math.min(gesture.from.x, gesture.to.x)} y={Math.min(gesture.from.y, gesture.to.y)} width={Math.abs(gesture.to.x - gesture.from.x)} height={Math.abs(gesture.to.y - gesture.from.y)} fill="#efd18b" opacity={0.22} stroke="#efd18b" strokeWidth={2 / camera.scale} dash={[6 / camera.scale, 4 / camera.scale]}/>}</Layer>
-    </Stage>
-    <div className="table-token-status-accessibility" role="list" aria-label="–°–æ—Å—Ç–æ—è–Ω–∏—è —Ñ–∏–≥—É—Ä">{scene.tokens.filter(token => token.statuses?.length).map(token => <div role="listitem" key={token.id}>{token.name}: {token.statuses!.map(id => CONDITIONS[id].label + (id === 'exhaustion' ? ` ${token.exhaustionLevel ?? 1}` : '')).join(', ')}</div>)}</div>
-    {primary && onTokenAction && tool === 'select' && !panning && !gesture && <TokenContextMenu key={primary.id} menuRef={menuRef} token={previewToken(primary)} pending={pending} onAction={tokenAction} onResizePreview={resize} resizePixelsPerCell={Math.max(24, scene.gridSize * camera.scale)} position={worldToScreen(resizePreview?.id === primary.id ? boundedPoint(previewToken(primary), scene.gridSize, primary) : motionStore.position(primary.id, primary), camera)} radius={previewToken(primary).size * scene.gridSize * 0.42 * camera.scale} viewport={viewport}/>}
-    {!map && <div className="table-stage-loading">–†–∞—Å—Å—Ç–∏–ª–∞–µ–º –∫–∞—Ä—Ç—É‚Ä¶</div>}
-    <div className="table-zoom"><button aria-label="–£–º–µ–Ω—å—à–∏—Ç—å –∫–∞—Ä—Ç—É" onClick={() => zoom(1 / 1.25)}><ZoomOut size={18}/></button><output aria-label="–ú–∞—Å—à—Ç–∞–± –∫–∞—Ä—Ç—ã">{Math.round(camera.scale * 100)}%</output><button aria-label="–£–≤–µ–ª–∏—á–∏—Ç—å –∫–∞—Ä—Ç—É" onClick={() => zoom(1.25)}><ZoomIn size={18}/></button><button aria-label="–ü–æ–∫–∞–∑–∞—Ç—å –≤—Å—é –∫–∞—Ä—Ç—É" onClick={fit}><Scan size={18}/></button></div>
-    <div className="table-coordinate">{pointer ? `X ${Math.round(pointer.x)} ¬∑ Y ${Math.round(pointer.y)}` : '–ö–æ–ª–µ—Å–æ ‚Äî –º–∞—Å—à—Ç–∞–±'} ¬∑ {scene.gridSize} px / 5 —Ñ—É—Ç–æ–≤</div>
-  </div>;
-}
+      <Layer><CanvasImage image={map ?? undefined} x={map ? (scene.width - map.width * Math.min(scene.width / map.width, scene.height / map.height)) / 2 : 0} y={map ? (scene.height - map.height * Math.min(scene.width / map.width, scene.height / map.height)) / 2 : 0} width={map ? map.width * Math.min(scene.width / map.width, scene.height / map.height) : scene.width} height={map ? map.height * Math.min(scene.width / map.width, scene.height / map.height) : scene.height} listening={false}/>{grid}</Layer6Á~º∂âûÀk∫wµÁc”cÉU¢÷&Vf˜&R÷G&r◊Fˆ∂V‚◊&W6ó¶RÁF"Êw¶‚
+¬‚µΩ	ç=Ì-Ìí-Ìµ’“‡–†≠	˝=Ωç≠mçÚ=}]¢}Õ]˝ÌM--]mM]›¢&ˆGV7Fñˆ‚'Vñ∆B˝Ìç≥≤6óFW2-]çÛíw&•ÛfS&C3ìCÉÉì&S#Sccñ33ÜgÊwfW%Û633v6SìS6SÉÉìÜcSÉCcs6V3S#F#f¬6˜W&6RsS&6#Ü63sS33ñSVCñ3É6S#ÜcÉV6#Éc3F¬FW∆˜ñ÷VÁBvFWÛfS&CÜ6&3f63ÉìFS#VSFF3ìCì&&(	G7V66VVFVB‚vóDáV"÷ñ‚vfc&CFvSCc#VC##SssfScÜCñF&C3ñCÉVÌ›Ì-Ω“}]]rç›-]=mç„≤Ìù]RM]]-‚V&#Ss&Cv3V3FCsñ#f6#scS6#SÉñsìñ33&F‚	MÌÕ]“Ê˜Fv÷&Á'RÇ˝=Ωç}›ΩíMÌ-=ÚÌ]›]›≤‚6ÜV6∑ˆñÁBM‚˝=Ωç≠mçÉ¢##b””#ïCR”#2”S”Ö¢÷&Vf˜&R◊V&∆ó6Ç÷G&r◊Fˆ∂V‚◊&W6ó¶RÁF"Êw¶≤]ç"Ì≠É¢##b””#í÷G&r◊Fˆ∂V‚◊&W6ó¶R◊&V∆V6RÁF"Êw¶‚
+Ì--]››ΩR≠ÌÕ›M≤}-]ççΩç√≤&WfñWr˝=}]›ΩR'VÁFñ÷R"›-Ìí}M}R›R}˝=≠Ωç¬‚
+›-}˝ç¬ΩÌ≠ΩÕ›Ú¬MÌ-Ω]›˝ÌΩR˝=Ωç≠mçÇ‡–†¢22	-]≠-Ì›ΩR}›≠ÇÌ-Ì˝›çí¬≠Ì›m]›-mçÚÇÕ]-¿†≠	›Mç==R=≠-]››ΩR˝Ωç≠Ç}Õ]›]›≤≠ÌÕ˝≠-›ΩÕÇ--Ì≠çÕÇ-]≠-Ì›ΩÕÇ˝ç≠-Ì=ÕÕÕÉ≤-mR˝ç≠-Ì=ÕÕ˝Ì≠}›˝MÌ¬›}-›ç]¬Ì-Ì˝›çÚ"Õ]›‚‚	≠-ΩÌ2ÌM]mç"Ì-M]ΩÕ›ΩRçÕ-ÌΩ≤MΩÚR-›M-›ΩRÌ-Ì˝›çíBdCVR¬*Ω	≠Ì›m]›-mçå+≤Ç*Ω
+Õ]-å+≤‚	˝ÌΩ]M›çRM-(	BÕÌ-Ì˝-]ΩÕ›ΩR=}›ΩRÌ-Õ]-≠Ç¬›R=ΩÌ-çÚçrÌMçmçΩÕ›Ì=‚˝ç≠≤--ÌÕ-ç}]≠çR˝-ç≤≠Ì›m]›-mçÇ˝Õ]-Ç›]"‚	MΩÚç-Ìù]›çÚ›≠-RÌ-ÌmÌ-Ú˝]Ì}›ΩR}≤¬=Ì-]›√‚„bÌ--Ú"Õ]›‚Ç›≠››Ì¬}-]›çÇ‡†≠	˝Ì-]]›„¢F&vWFVBF&∆R÷ñÁWF¬F&∆R◊66VÊV¬F&∆R÷¬Fˆ∂V‚÷6ˆÁFWáB÷÷VÁV(	CsRÛsS≤ÁÇG62“÷ÊÙV÷óF(	M=˝]ç›„≤Á“'V‚'Vñ∆F(	M=˝]ç›‚‚	-ç}=ΩÕ›Ú˝Ì-]≠"=}]R›R}˝=≠Ω¬‚	˝‚Ì-M]ΩÕ›ÌÕ2}˝Ì2˝ÌΩÕ}Ì--]ΩÚç}Õ]›]›çÚÌ˝=Ωç≠Ì-›≥¢6óFW26˜W&6R3Cì3C3Üc##ñ#ñCÜ3cf#cìVF#S3Ccss#ì&CÜ¬-]çÛw&•ÛfS&C3ìCÉÉì&S#Sccñ33ÜgÊwfW%ÛÉ6fcCìsv3Éììs#6#sccñSSCvc6¬FW∆˜ñ÷VÁBvFWÛfS&F3VSÉÉÉÉì##6f#ScSFS#Ü6(	G7V66VVFVC≤MÌÕ]“∂Ê˜Fv÷&Á'U“ÜáGG3¢ÚˆÊ˜Fv÷&Á'RíÌ]›“˝=Ωç}›Ω¬‚vóDáV"÷ñÊ¢#sC3&cCÜñCÜF&Cc#3&SCñ6V&CSV#vCñF≤M]]-‚vóDáV"ı6óFW2Ì-˝Ω‚Üc&&VvFCC#VFSfSVVC6#fSf33v&6FSsÉví‚	˝]]B˝=Ωç≠mç]íÌ]›]›≠Ì˝çÚc•ƒD‰B4ƒT‰D%∆6ÜV6∑ˆñÁG5√##b””#ïCR”3r”3í”Ésï¢÷&Vf˜&R◊V&∆ó6Ç◊7FGW2÷ñ6ˆÁ2ÁF&≤]ç"&ˆGV7Fñˆ‚›Ì≠É¢c•ƒD‰B4ƒT‰D%∆6ÜV6∑ˆñÁG5√##b””#í◊7FGW2÷ñ6ˆÁ2◊&V∆V6RÁF"Êw¶‚	ç-Ì}›ç≠É¢Ω≠-ΩÌ2}›}≠Ì%“Ç‚‚Ú‚‚ˆ∆ñ"˜F&∆Rˆ6ˆÊFóFñˆÁ2ÁG2í¬¥6Áf5“Ç‚‚Ú‚‚ˆ˜F&∆R˜F&∆R÷6Áf2ÁG7Çí¬ΩÕ]›‚Ì-Ì˝›çï“Ç‚‚Ú‚‚ˆ˜F&∆R˜Fˆ∂V‚÷6ˆÁFWáB÷÷VÁRÁG7Çí‡†–†–¢22	ΩçmùççRÌ≠›≠Ω]›M–†–≠	˝‚}˝Ì2˝ÌΩÕ}Ì--]ΩÚMÌ-Ω]›≤ΩçmùççR˝]MΩÌm]›çÚ˝ÇÌ-=---çÇ(	3"=}-›ç≠Ì"¬}çΩ‚MÌ-=˝›ΩRÇçÕ]›]r˝ÌM]ÌM˝ù]=‚-ÌÌM›Ì=‚-]Õ]›Ç‚	=ΩÌ}≠*Ω
+-ÌΩÕ≠‚≠Ì=MÕÌ=="-\+≤-Ì}-ù]"-Ì=çí˝ÌMÌ‚	Õ-]=}--=]""}-S≤˝ÌM--]mM››ΩR]çÇç≠ΩÌ}Ì-Ú¬UD2Çî‰Fñ÷W¶ˆÊRÌ]›]›≤‚
+¬‚µΩ	≠Ω]›M¬Ç-]Õı’“‡–†–≠	˝]-ç}›Ú˝Ì-]≠¢B-]-Ì"˝Ω›çÌ-ùç≠˝]=]çí≠Ω]›MÚ˝ÌçΩÇ¬GóU67&óB˝Ìç≤‚	"Ìù]íÌ}]í˝˝≠R˝ÌΩ›ΩíÁ“FW7C¢3BÛ3r¬-ÇÌÚ"˝ΩΩ]ΩÕ›‚ç}Õ]›˝]ÕÌ¬F&∆R÷ÁFW7BÊ÷ß2Ü˜&FñÊ'í'Fñ6óÁG26VRFˆ∂V‚VFóBf˜&”≤ñÁ7V7F˜"g&7FñˆÊ¬6ó¶S≤6ˆ◊7BFˆˆ∆&"í‚	MΩÚ]Ωç}≠Ω]›MÚç˝ÌΩÕ}=]-ÚÌ-M]ΩÕ›Ú≠Ì˝çÚÌ˝=Ωç≠Ì-››Ì=‚6˜W&6R]r›]}-]ç››ΩRç}Õ]›]›çí-ÌΩ‚	˝ÌΩÕ}Ì--]Ω¬Ì-M]ΩÕ›‚}]çç≤˝=Ωç≠mç‚ù-ÇvóDáV"MΩÚ›-Ìí}M}Ç‡–†–≠
+}]≠˝Ìç›#¢c•ƒD‰B4ƒT‰D%∆6ÜV6∑ˆñÁG5√##b””#í”S"÷&Vf˜&R÷6∆VÊF"÷ÊV"÷÷F6ÜW2ÁF"Êw¶‚	˝]-ç}›Ú›]=M}›Ú˝Ì˝Ω-≠F"Ì]›]›¬˝]MΩM=ùçR]ç-≤›R=MΩ˝Ωç¬‚	ç-Ì=Ì-ΩR˝Ì-]≠ÇÇ˝=Ωç≠mçÚ=M="MÌ˝ç›≤˝ÌΩR-Ω˝ÌΩ›]›çÚ‡–†–¢222	˝Ì-]≠Ç]Ωç}›Ìí≠Ì˝çÇ≠Ω]›M–†–≠	"Ì-M]ΩÕ›Ì¬6ÜV6∂˜WBc•ƒD‰B4ƒT‰D%∆6∆VÊF"◊&V∆V6R”##c#ñ›}RÌ˝=Ωç≠Ì-››Ì=‚6˜W&6R3Cì3C3˝]]›]]›≤-ÌΩÕ≠‚MùΩ≤≠Ω]›MÚÇ-˝}››ΩR∂Ê˜v∆VFvR‚	˝ÌΩ›ΩíÁ“FW7C¢32Û32¬&ˆGV7Fñˆ‚'Vñ∆B˝Ìç≤‚	"ΩÌ≠ΩÕ›Ì¬=}]R›-]-Ì-Ìí≠Õ˝›çÇ˝Ì-]]›≤Ωçmùç]Rs£	ÕçÌí]MÇÌ-=---=ÌùçRÇì£MΩÚ˝ÌΩ›Ì=‚Ì--≤˝]]≠ΩÌ}-]Ω¬MçΩÕ-=]"-ΩM}2‚	›m-çR›]˝ÌΩ›Ì=‚-ç›-˝]MΩ=]"Ì=ΩÌ--¬MÌ-=˝›Ì-¬¬]-]›ÌR-]Ì-›çR˝ÌΩ›Ì=‚Ì--MΩÚ›}›}]›çÚÌ]›]›‚‚
+}Õ]≤3ì9sÉCBÇCC9s¢=Ìç}Ì›-ΩÕ›ÌR˝]]˝ÌΩ›]›çRMÌ≠=Õ]›-Ì-=---=]"¬ÌΩ-¬=ΩÌ}≠Ç-ΩÌ-ÌíCBÇ‚	Ì-M]ΩÕ›Ú--ÌÕ-ç}]≠Ú˝Ì-]≠÷˜Fñˆ‚&ˆ&RÇ˝ÌΩ›Ωí=Mç"MÌ-=˝›Ì-Ç›R-Ω˝ÌΩ›˝Ωç¬‡–†–¢222	˝=Ωç≠mçÚ≠Ω]›MÚ}-]ç]› –†–•6óFW3¢-]çÚw&•ÛfS&C3ìCÉÉì&S#Sccñ33ÜgÊwfW%ÛÜ6C3ÉSìCccCÉììSFC#Üc63Cs#cV¬6˜W&6RVcìc#6fVCcF33FSv&6&CVSììÉ#sCsìÉV6V6c36¬FW∆˜ñ÷VÁBvFWÛfS&SCc3Éìñ6sñV&c63SVV(	B7V66VVFVB‚
+ù"∂Ê˜Fv÷&Á'U“ÜáGG3¢ÚˆÊ˜Fv÷&Á'Rí¬-]≠=ùçR›-Ìù≠ÇMÌÕ]›ÇMÌ-=˝Ì]›]›≤‚vóDáV"÷ñ‚Ì›Ì-Ω“}]]r˝ÌM≠ΩÌ}››=‚ç›-]=mç„¢33C&3FCC6&3fS6V#ÉfV#v6cVCìCìÉV&Sñ‚	M]]-ÕÚ6óFR6˜W&6RÇvóDáV"Ì-˝ΩÉ¢V3V33cc#ccSVc3És&FSÜìs#ìV#Sf‡–†–≠
+Mç›ΩÕ›Ú˝Ì-]≠GóU67&óB]Ωç}›Ìí≠Ì˝çÇ˝ÌçΩ‚	˝]]B˝=Ωç≠mç]íÌ]›“c•ƒD‰B4ƒT‰D%∆6ÜV6∑ˆñÁG5√##b””#ïCR”SR”Ç”ÉsU¢÷&Vf˜&R◊V&∆ó6Ç÷6∆VÊF"÷ÊV"÷÷F6ÜW2ÁF"Êw¶≤]ç"Ì≠Ç##b””#í÷6∆VÊF"÷ÊV"÷÷F6ÜW2◊&V∆V6RÁF"Êw¶‚&WfñWr6W76ñˆ‚ìÉì}-]ç”≤˝Ì"SÉrÌ-ÌÌmM“¬F6≤÷˜vÊVB˝Ìm]Ì"&V∆V6R›RÌ-ΩÌ¬‚
+-]-Ì-Ú-≠ΩM≠}≠Ω-¬7V˜&W¬Ìç]“¬}]-ΩRΩÌ≠ΩÕ›ΩR›≠≠=›-ÇçR≠Õ˝›çÚ=MΩ]›≤‡–†–≠	Ì›Ì-›Ìí6ÜV6∂˜WB›Õ]]››‚Ì]›˝]"˝ΩΩ]ΩÕ›ΩR›]}-]ç››ΩRç}Õ]›]›çÚ-ÌΩÇç]ÌM›=‚vóB›}23Cì3C3≤Ì˝=Ωç≠Ì-››Ωí6˜W&6R-]˝]¬Vcìc#6fR"Ì-M]ΩÕ›Ì¬&V∆V6R6ÜV6∂˜WB‚	˝]]BΩ]M=Ìù]í˝=Ωç≠mç]íçrÌ›Ì-›Ì=‚6ÜV6∂˜WB-]=]-ÚÌ=ΩÌ--¬]=‚ç-Ìç‚›Ì-Ìí&V÷˜FR6óFR6˜W&6R¬Ì]›ç"≠Ω]›M¬Ç}=m=‚Ì-2‚	ç-Ì=Ì-Ú}˝ç¬MÌ-Ω]›ΩÌ≠ΩÕ›‚˝ÌΩR-Ω˝=≠‡–

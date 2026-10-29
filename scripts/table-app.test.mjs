@@ -58,7 +58,7 @@ test('rectangle selection expands groups; Delete sends one atomic command for th
 });
 
 test('ordinary participants see token edit form and an explicit delete action', () => {
-  const view = app(); view.canvas().onSelect('a');
+  const view = app(); view.nodes(view.render()).find(node => node.type === 'button' && node.props?.['aria-label'] === 'Открыть панель стола').props.onClick(); view.canvas().onSelect('a');
   const nodes = view.nodes(view.render());
   assert.ok(nodes.some(node => node.type === 'input' && node.props.name === 'name'));
   const remove = nodes.find(node => node.type === 'button' && node.props.className?.includes('table-delete-token'));
@@ -99,7 +99,7 @@ test('token menu copy and delete target the primary token only', () => {
 });
 
 test('the inspector can preserve a fractional size from dragging when editing other properties', () => {
-  const view = app(); view.tokens[0].size = 1.37; view.canvas().onSelect('a');
+  const view = app(); view.tokens[0].size = 1.37; view.nodes(view.render()).find(node => node.type === 'button' && node.props?.['aria-label'] === 'Открыть панель стола').props.onClick(); view.canvas().onSelect('a');
   const field = view.nodes(view.render()).find(node => node.props?.name === 'size');
   assert.ok(field); assert.equal(field.props.defaultValue, 1.37);
   if (field.type === 'select') assert.ok(view.nodes(field).some(node => node.type === 'option' && node.props.value === 1.37));
@@ -128,4 +128,24 @@ test('status menu toggles validated conditions, exhaustion level and clear witho
   view.canvas().onTokenAction?.(view.tokens[0], 'status', 'invalid');
   view.canvas().onTokenAction?.(view.tokens[0], 'status', 'exhaustion:9');
   assert.equal(view.sent.length, count);
+});
+
+test('compact toolbar keeps the inspector closed, opens it on demand and selects ruler modes', () => {
+  const view = app();
+  let nodes = view.nodes(view.render());
+  assert.equal(nodes.some(node => node.props?.className === 'table-inspector'), false);
+  const panel = nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Открыть панель стола');
+  assert.ok(panel); panel.props.onClick(); nodes = view.nodes(view.render());
+  assert.ok(nodes.some(node => node.props?.className === 'table-inspector'));
+  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Закрыть панель стола').props.onClick();
+  nodes = view.nodes(view.render()); assert.equal(nodes.some(node => node.props?.className === 'table-inspector'), false);
+  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка и AoE').props.onClick();
+  nodes = view.nodes(view.render());
+  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Сфера').props.onClick();
+  assert.equal(view.canvas().tool, 'measure'); assert.equal(view.canvas().measureMode, 'sphere');
+  nodes = view.nodes(view.render());
+  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка и AoE').props.onClick();
+  nodes = view.nodes(view.render());
+  nodes.find(node => node.type === 'button' && node.props?.['aria-label'] === 'Линейка движения токена').props.onClick();
+  assert.equal(view.canvas().tool, 'select'); assert.equal(view.canvas().measureMode, 'move');
 });

@@ -7,6 +7,7 @@ import * as geometry from '../lib/table/geometry.ts';
 import * as selection from '../lib/table/selection.ts';
 import * as sceneModule from '../lib/table/scene.ts';
 import * as conditions from '../lib/table/conditions.ts';
+import * as measurement from '../lib/table/measurement.ts';
 import * as motion from '../lib/table/motion.ts';
 
 // Render the actual canvas handlers without a browser or GPU.
@@ -30,6 +31,7 @@ function canvas(tool = 'select', options = {}) {
     if (name.includes('/geometry')) return geometry;
     if (name.includes('/selection')) return selection;
     if (name.includes('/conditions')) return conditions;
+    if (name.includes('/measurement')) return measurement;
     if (name.includes('/scene')) return { ...sceneModule, canMoveToken: () => true };
     if (name.includes('/motion')) return motion;
     return {};
@@ -39,7 +41,7 @@ function canvas(tool = 'select', options = {}) {
   const props = { scene, actor: {}, tool, snap: true, pending: false,
     onSelect: (id, additive) => previews.push(['select', id, additive]), motionStore: { position: (_id, point) => point },
     onMotionStart: () => true, onMotionPreview: (_token, point) => previews.push(['move', point]), onMotionEnd: id => ended.push(id),
-    onDraw: drawing => drawings.push(drawing), onErase: id => erased.push(id), onSelectMany: (ids, additive) => selections.push([ids, additive]), ...options, scene };
+    onDraw: drawing => drawings.push(drawing), onErase: id => erased.push(id), onSelectMany: (ids, additive) => selections.push([ids, additive]), measureMode: 'line', ...options, scene };
   const tree = exports.default(props);
   const stage = tree.props.children[0];
   const nodes = node => !node || typeof node !== 'object' ? [] : [node, ...[node.props?.children].flat(Infinity).flatMap(nodes)];
@@ -274,6 +276,37 @@ test('condition badges remain upright and show four conditions plus overflow wit
   const text = view.nodes(badges).filter(node => node.type === 'Text').map(node => node.props.text);
   assert.deepEqual(text, ['+1']);
   assert.ok(view.nodes(view.tree).some(node => node.props?.['aria-label'] === 'Состояния фигур'));
+});
+test('ruler gesture measures snapped world points in feet and remains local to the active Canvas', () => {
+  const view = canvas('measure', { measureMode: 'line' }), pointer = pointerStage(view);
+  view.stage.props.onMouseDown({ target: pointer.stage, evt: { button: 0 } });
+  pointer.point({ x: 100, y: 20 }); view.stage.props.onMouseMove({ evt: {} });
+  let tree = view.rerender({});
+  let ruler = view.nodes(tree).find(node => node.type === 'Line' && node.props.name === 'measurement-shape');
+  assert.deepEqual(Array.from(ruler.props.points), [40, 40, 200, 40]);
+  assert.ok(view.nodes(tree).some(node => node.type === 'Text' && node.props.text === '10 ft'));
+  view.stage.props.onMouseUp({ evt: {} });
+  tree = view.rerender({}); assert.ok(view.nodes(tree).some(node => node.props.name === 'measurement-shape'));
+  assert.deepEqual(view.drawings, []);
+});
+test('Escape clears local ruler previews without persisting scene drawings', () => {
+  const view = canvas('measure', { measureMode: 'sphere' }), pointer = pointerStage(view);
+  view.effects[2]();
+  view.stage.props.onMouseDown({ target: pointer.stage, evt: { button: 0 } });
+  pointer.point({ x: 100, y: 20 }); view.stage.props.onMouseMove({ evt: {} });
+  view.listeners.get('keydown')({ code: 'Escape', preventDefault() {} });
+  let tree = view.rerender({}); assert.equal(view.nodes(tree).find(node => node.props?.name === 'measurement-shape'), undefined);
+  assert.deepEqual(view.drawings, []);
+});
+test('movement ruler follows token drag without intercepting the existing motion workflow', () => {
+  const view = canvas('select', { measureMode: 'move' }); let pos = { x: 40, y: 40 };
+  const target = { x: () => pos.x, y: () => pos.y, stopDrag() {}, position() {} };
+  view.group.props.onDragStart({ target, evt: {} }); pos = { x: 120, y: 40 };
+  view.group.props.onDragMove({ target, cancelBubble: false });
+  const tree = view.rerender({});
+  assert.ok(view.nodes(tree).some(node => node.type === 'Line' && node.props.name === 'movement-ruler'));
+  assert.ok(view.nodes(tree).some(node => node.type === 'Text' && node.props.text === '5 ft'));
+  assert.deepEqual(view.previews.find(entry => entry[0] === 'move')[1], { x: 120, y: 40 });
 });
 test('native menu scrolling is available while canvas touch gestures remain isolated', () => {
   const view = canvas();
