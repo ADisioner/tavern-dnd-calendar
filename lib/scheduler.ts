@@ -29,6 +29,26 @@ export function findCommonWindows(groups: Interval[][], duration: number, now = 
   const step=15*60*1000;
   return common.map(v=>({start:Math.ceil(Math.max(now,v.start)/step)*step,end:v.end})).filter(v=>v.end-v.start>=duration);
 }
+export type SuggestedWindow = Interval & { missingIndices: number[] };
+export function findSuggestedWindows(groups: Interval[][], duration: number, now = Date.now(), busy: Interval[] = [], onlyAll = false): SuggestedWindow[] {
+  if (!groups.length || !Number.isFinite(duration) || duration <= 0) return [];
+  if (onlyAll) return findCommonWindows(groups,duration,now,busy).map(w=>({...w,missingIndices:[]}));
+  const step=15*60*1000;
+  // Each range describes valid session starts for one member, after bookings.
+  const ranges=groups.map(group=>findCommonWindows([group],duration,now,busy).map(w=>({
+    start:w.start,last:Math.floor((w.end-duration)/step)*step,
+  })));
+  const boundaries=[...new Set(ranges.flatMap(group=>group.flatMap(r=>[r.start,r.last+step])))].sort((a,b)=>a-b);
+  const result: SuggestedWindow[]=[];
+  for (let i=0;i<boundaries.length-1;i++) {
+    const start=boundaries[i],missingIndices=ranges.flatMap((group,index)=>group.some(r=>r.start<=start&&start<=r.last)?[]:[index]);
+    if (missingIndices.length>2 || missingIndices.length===groups.length) continue;
+    const end=boundaries[i+1]-step+duration,last=result.at(-1);
+    if (last && last.end-duration+step===start && last.missingIndices.join(',')===missingIndices.join(',')) last.end=end;
+    else result.push({start,end,missingIndices});
+  }
+  return result;
+}
 export function dateKey(time: number, timezone: string) {
   const parts = new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(time);
   const p=(t:string)=>parts.find(x=>x.type===t)!.value;
