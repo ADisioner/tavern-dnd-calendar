@@ -133,6 +133,11 @@ export default function TableApp({ campaignId, testMode = false }: { campaignId:
   }
   function tokenAction(token: TableToken, action: string, value?: string | boolean | number) {
     if (disabled || !scene) return;
+    if (action === 'visibility') {
+      if (actor?.role !== 'master') return;
+      return room.send({ type: 'vision', tokenId: token.id, expectedVersion: token.version,
+        visionFeet: token.visionFeet ?? 60, hidden: !token.hidden });
+    }
     if (action === 'duplicate' || action === 'delete') {
       return room.send({ type: action === 'delete' ? 'remove' : 'duplicate', tokenId: token.id, expectedVersion: token.version });
     }

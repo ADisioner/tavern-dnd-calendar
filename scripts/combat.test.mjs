@@ -32,6 +32,35 @@ test('auto initiative uses server RNG, ownership and NPC statistics are enforced
   const restored=roomDataSchema.parse(JSON.parse(JSON.stringify(room)));assert.equal(roomView(restored,player).scene.tokens.find(t=>t.id===pc.id).hp,8);assert.equal(restored.scenes[0].scene.combat.round,1);
 });
 
+test('temporary HP can be set, displayed and survive initiative removal and re-addition',async()=>{
+  const {createRoom,applyRoomCommand,roomCommandSchema,roomDataSchema,roomView}=await import('../lib/table/room.ts');
+  const gm={userId:crypto.randomUUID(),name:'GM',role:'master'},roster=[gm];let room=createRoom(crypto.randomUUID(),roster);
+  const token=room.scenes[0].scene.tokens[0];
+  const dispatch=input=>{const scene=room.scenes[0].scene;room=applyRoomCommand(room,roomCommandSchema.parse({id:crypto.randomUUID(),sceneId:scene.id,baseRevision:scene.revision,...input}),gm,roster).data;};
+  let scene=room.scenes[0].scene;
+  dispatch({type:'vitals',tokenId:token.id,expectedVersion:token.version,hp:8,maxHp:10,tempHp:6,ac:12,initiativeMod:1,hidden:false,shareStats:false,initiativeGroup:''});
+  dispatch({type:'combat-add',tokenId:token.id});
+  assert.equal(roomView(room,gm).scene.tokens.find(t=>t.id===token.id).tempHp,6);
+  const entryId=room.scenes[0].scene.combat.entries[0].id;
+  dispatch({type:'combat-remove',participantId:entryId});
+  assert.equal(roomView(room,gm).scene.tokens.find(t=>t.id===token.id).tempHp,6);
+  dispatch({type:'combat-add',tokenId:token.id});
+  const restored=roomDataSchema.parse(JSON.parse(JSON.stringify(room)));
+  assert.equal(roomView(restored,gm).scene.tokens.find(t=>t.id===token.id).tempHp,6);
+  assert.equal(restored.scenes[0].scene.combat.entries.length,1);
+});
+
+test('numeric damage spends temporary HP first and numeric healing caps at maximum HP',()=>{
+  const gm={userId:'gm',role:'master'},scene={tokens:[{id:'t',ownerId:'p',hp:10,tempHp:5,maxHp:12,version:0}],combat:{...combat.emptyCombat(),entries:[{id:'e',tokenId:'t',roll:10,total:10,tieOrder:0,tieRoll:null}]}};
+  const damaged=combat.applyCombat(scene,{type:'combat-adjust',tokenId:'t',expectedVersion:0,operation:'damage',amount:8},gm);
+  assert.equal(damaged.tokens[0].tempHp,0);assert.equal(damaged.tokens[0].hp,7);
+  const healed=combat.applyCombat(damaged,{type:'combat-adjust',tokenId:'t',expectedVersion:damaged.tokens[0].version,operation:'heal',amount:9},gm);
+  assert.equal(healed.tokens[0].hp,12);assert.equal(healed.tokens[0].tempHp,0);
+  assert.throws(()=>combat.combatCommandSchema.parse({id:crypto.randomUUID(),baseRevision:0,type:'combat-adjust',tokenId:'t',expectedVersion:0,operation:'damage',amount:0}));
+  const fatal=combat.applyCombat(healed,{type:'combat-adjust',tokenId:'t',expectedVersion:healed.tokens[0].version,operation:'damage',amount:99},gm);
+  assert.equal(fatal.tokens[0].hp,0);assert.equal(fatal.combat.entries.length,0);
+});
+
 test('optional tie rerolls are server generated and explicit NPC groups share one initiative roll',()=>{
   const entries=[{id:'a',tokenId:'ta',roll:null,total:null,tieOrder:0,tieRoll:null},{id:'b',tokenId:'tb',roll:null,total:null,tieOrder:1,tieRoll:null}],tokens=[{id:'ta',ownerId:null,initiativeMod:0},{id:'tb',ownerId:null,initiativeMod:0}],gm={userId:'g',role:'master'};
   let scene={tokens,combat:{running:false,round:0,currentId:null,tiePolicy:'reroll',entries}},numbers=[10,10,4,17];
@@ -48,10 +77,10 @@ test('zero HP removes current participant, advances round and ends empty combat'
   assert.deepEqual(next.combat.entries.map(e=>e.id),['a']);assert.equal(next.combat.currentId,'a');assert.equal(next.combat.round,3);
   const ended=combat.reconcileCombat(next,{...next,tokens:next.tokens.map(t=>({...t,hp:0}))});assert.equal(ended.combat.running,false);assert.equal(ended.combat.currentId,null);
 });
-test('explicit hidden statistics override ownership and public stats',()=>{
-  const scene={tokens:[{id:'t',ownerId:'p',hp:7,maxHp:10,ac:17,initiativeMod:3,shareStats:true,hideStats:true,effects:[]}],combat:{...combat.emptyCombat(),entries:[{id:'e',tokenId:'t',roll:12,total:15,tieOrder:0,tieRoll:null}]}};
-  const view=combat.redactCombat(scene,{role:'player',userId:'p'},new Set(['t']));assert.equal(view.tokens[0].hp,undefined);assert.equal(view.combat.entries[0].total,null);
-  assert.equal(combat.redactCombat(scene,{role:'master',userId:'g'},new Set(['t'])).tokens[0].hp,7);
+test('hideStats hides only statistics from players while GM keeps them and token stays visible',()=>{
+  const scene={tokens:[{id:'t',name:'Goblin',ownerId:'p',hidden:false,hp:7,tempHp:5,maxHp:10,ac:17,initiativeMod:3,shareStats:true,hideStats:true,effects:[]}],combat:{...combat.emptyCombat(),entries:[{id:'e',tokenId:'t',roll:12,total:15,tieOrder:0,tieRoll:null}]}};
+  const view=combat.redactCombat(scene,{role:'player',userId:'p'},new Set(['t']));assert.equal(view.tokens[0].id,'t');assert.equal(view.tokens[0].name,'Goblin');assert.equal(view.tokens[0].hidden,false);assert.equal(view.tokens[0].hp,undefined);assert.equal(view.tokens[0].tempHp,undefined);assert.equal(view.combat.entries[0].total,null);
+  const gmView=combat.redactCombat(scene,{role:'master',userId:'g'},new Set(['t']));assert.equal(gmView.tokens[0].hp,7);assert.equal(gmView.tokens[0].tempHp,5);
 });
 
 
@@ -61,7 +90,7 @@ test('hidden stats persist through room schema and cannot be read or changed by 
  const token=room.scenes[0].scene.tokens.find(t=>t.ownerId===player.userId);
  const command=(actor,extra)=>{const scene=room.scenes[0].scene;return applyRoomCommand(room,roomCommandSchema.parse({id:crypto.randomUUID(),sceneId:scene.id,baseRevision:scene.revision,type:'vitals',tokenId:token.id,expectedVersion:scene.tokens.find(t=>t.id===token.id).version,hp:7,maxHp:10,ac:17,initiativeMod:2,hidden:false,shareStats:true,hideStats:true,initiativeGroup:'',...extra}),actor,roster);};
  room=command(gm,{}).data;room=roomDataSchema.parse(JSON.parse(JSON.stringify(room)));
- assert.equal(roomView(room,player).scene.tokens.find(t=>t.id===token.id).hp,undefined);
+ const playerToken=roomView(room,player).scene.tokens.find(t=>t.id===token.id);assert.equal(playerToken.id,token.id);assert.notEqual(playerToken.hidden,true);assert.equal(playerToken.hp,undefined);assert.equal(playerToken.tempHp,undefined);
  assert.throws(()=>command(player,{hideStats:false,hp:8}));assert.throws(()=>command(player,{hp:8}));
  assert.equal(roomView(room,gm).scene.tokens.find(t=>t.id===token.id).hp,7);
 });

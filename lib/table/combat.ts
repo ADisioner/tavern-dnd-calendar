@@ -5,7 +5,7 @@ export const effectSchema=z.object({id:z.string().uuid(),name:z.string().trim().
 export const participantSchema=z.object({id:z.string().uuid(),tokenId:z.string().uuid(),roll:z.number().int().min(1).max(20).nullable(),total:z.number().int().nullable(),tieOrder:z.number().int().nonnegative(),tieRoll:z.number().int().min(1).max(20).nullable()}).strict();
 export const combatSchema=z.object({entries:z.array(participantSchema).max(150),running:z.boolean(),round:z.number().int().min(0).max(100000),currentId:z.string().uuid().nullable(),tiePolicy:z.enum(['manual','reroll'])}).strict();
 export const emptyCombat=()=>({entries:[],running:false,round:0,currentId:null,tiePolicy:'manual' as const});
-export const combatTokenFields={hp:z.number().int().min(0).max(1000000).optional(),maxHp:z.number().int().min(1).max(1000000).optional(),ac:z.number().int().min(0).max(60).optional(),initiativeMod:z.number().int().min(-20).max(40).optional(),shareStats:z.boolean().optional(),hideStats:z.boolean().optional(),initiativeGroup:z.string().trim().max(40).optional(),effects:z.array(effectSchema).max(20).optional()};
+export const combatTokenFields={hp:z.number().int().min(0).max(1000000).optional(),tempHp:z.number().int().min(0).max(1000000).optional(),maxHp:z.number().int().min(1).max(1000000).optional(),ac:z.number().int().min(0).max(60).optional(),initiativeMod:z.number().int().min(-20).max(40).optional(),shareStats:z.boolean().optional(),hideStats:z.boolean().optional(),initiativeGroup:z.string().trim().max(40).optional(),effects:z.array(effectSchema).max(20).optional()};
 const envelope=z.object({id:z.string().uuid(),sceneId:z.string().uuid().optional(),baseRevision:z.number().int().nonnegative()});
 export const combatCommandSchema=z.discriminatedUnion('type',[
   envelope.extend({type:z.literal('combat-add'),tokenId:z.string().uuid()}).strict(),
@@ -14,13 +14,14 @@ export const combatCommandSchema=z.discriminatedUnion('type',[
   envelope.extend({type:z.literal('combat-start')}).strict(),envelope.extend({type:z.literal('combat-next')}).strict(),envelope.extend({type:z.literal('combat-end')}).strict(),
   envelope.extend({type:z.literal('combat-policy'),policy:z.enum(['manual','reroll'])}).strict(),
   envelope.extend({type:z.literal('combat-order'),participantIds:z.array(z.string().uuid()).max(150)}).strict(),
-  envelope.extend({type:z.literal('vitals'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),hp:z.number().int().min(0).max(1000000),maxHp:z.number().int().min(1).max(1000000),ac:z.number().int().min(0).max(60),initiativeMod:z.number().int().min(-20).max(40),hidden:z.boolean(),shareStats:z.boolean(),hideStats:z.boolean().optional(),initiativeGroup:z.string().trim().max(40)}).strict(),
+  envelope.extend({type:z.literal('combat-adjust'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),operation:z.enum(['damage','heal']),amount:z.number().int().min(1).max(1000000)}).strict(),
+  envelope.extend({type:z.literal('vitals'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),hp:z.number().int().min(0).max(1000000),tempHp:z.number().int().min(0).max(1000000).optional(),maxHp:z.number().int().min(1).max(1000000),ac:z.number().int().min(0).max(60),initiativeMod:z.number().int().min(-20).max(40),hidden:z.boolean(),shareStats:z.boolean(),hideStats:z.boolean().optional(),initiativeGroup:z.string().trim().max(40)}).strict(),
   envelope.extend({type:z.literal('effect-add'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),effect:effectSchema}).strict(),
   envelope.extend({type:z.literal('effect-remove'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),effectId:z.string().uuid()}).strict(),
 ]);
 export type CombatState=z.infer<typeof combatSchema>;
 export type CombatCommand=z.infer<typeof combatCommandSchema>;
-type CombatToken={id:string;ownerId:string|null;version?:number;hp?:number;maxHp?:number;ac?:number;initiativeMod?:number;hidden?:boolean;shareStats?:boolean;hideStats?:boolean;initiativeGroup?:string;statuses?:string[];effects?:z.infer<typeof effectSchema>[]};
+type CombatToken={id:string;ownerId:string|null;version?:number;hp?:number;tempHp?:number;maxHp?:number;ac?:number;initiativeMod?:number;hidden?:boolean;shareStats?:boolean;hideStats?:boolean;initiativeGroup?:string;statuses?:string[];effects?:z.infer<typeof effectSchema>[]};
 type Scene={tokens:CombatToken[];combat:CombatState};
 class CombatError extends Error {code:string;constructor(code:string,message:string){super(message);this.code=code;}}
 export function sortInitiative<T extends {id:string;total:number|null;tieOrder:number;tieRoll?:number|null}>(entries:T[],policy:string='manual'):T[]{return [...entries].sort((a,b)=>(b.total??-Infinity)-(a.total??-Infinity)||(policy==='reroll'?(b.tieRoll??0)-(a.tieRoll??0):0)||a.tieOrder-b.tieOrder||a.id.localeCompare(b.id));}
@@ -42,7 +43,7 @@ export function reconcileCombat<T extends Scene>(previous:T,next:T):T{
 export function applyCombat<T extends Scene>(scene:T,command:CombatCommand,actor:{userId:string;role:string},random=randomDie):T{
   const next={...scene,tokens:scene.tokens.map(t=>({...t,statuses:[...(t.statuses??[])],effects:(t.effects??[]).map(e=>({...e}))})),combat:{...(scene.combat??emptyCombat()),entries:(scene.combat?.entries??[]).map(e=>({...e}))}};
   const state=next.combat,gm=actor.role==='master';
-  if(['vitals','effect-add','effect-remove'].includes(command.type)){
+  if(['vitals','effect-add','effect-remove','combat-adjust'].includes(command.type)){
     const input=command as Extract<CombatCommand,{tokenId:string;expectedVersion:number}>,token=next.tokens.find(t=>t.id===input.tokenId);
     if(!token||!gm&&(token.ownerId!==actor.userId||token.hideStats))throw new CombatError('forbidden','Нет доступа к характеристикам.');
     if((token.version??0)!==input.expectedVersion)throw new CombatError('conflict','Характеристики изменились.');
@@ -50,7 +51,12 @@ export function applyCombat<T extends Scene>(scene:T,command:CombatCommand,actor
     if(input.type==='vitals'){
       if(input.hp>input.maxHp)throw new CombatError('invalid','HP не могут превышать максимум.');
       if(!gm&&(input.hidden!==!!token.hidden||input.shareStats!==!!token.shareStats||!!input.hideStats!==!!token.hideStats||input.initiativeGroup!==(token.initiativeGroup??'')))throw new CombatError('forbidden','Видимостью NPC и группами управляет ГМ.');
-      Object.assign(token,{hp:input.hp,maxHp:input.maxHp,ac:input.ac,initiativeMod:input.initiativeMod,...(gm?{hidden:input.hidden,shareStats:input.shareStats,hideStats:!!input.hideStats,initiativeGroup:input.initiativeGroup}:{})});
+      Object.assign(token,{hp:input.hp,...(input.tempHp!==undefined?{tempHp:input.tempHp}:{}),maxHp:input.maxHp,ac:input.ac,initiativeMod:input.initiativeMod,...(gm?{hidden:input.hidden,shareStats:input.shareStats,hideStats:!!input.hideStats,initiativeGroup:input.initiativeGroup}:{})});
+    }else if(input.type==='combat-adjust'){
+      const maxHp=token.maxHp??10;let hp=Math.min(maxHp,token.hp??maxHp),tempHp=token.tempHp??0;
+      if(input.operation==='heal')hp=Math.min(maxHp,hp+input.amount);
+      else{const absorbed=Math.min(tempHp,input.amount);tempHp-=absorbed;hp=Math.max(0,hp-(input.amount-absorbed));}
+      Object.assign(token,{hp,tempHp,maxHp});
     }else if(input.type==='effect-add'){
       if(token.effects.length>=20||token.effects.some(e=>e.id===input.effect.id))throw new CombatError('limit','До 20 уникальных эффектов на токене.');token.effects.push(input.effect);
       if(input.effect.condition&&!token.statuses.includes(input.effect.condition))token.statuses.push(input.effect.condition);
@@ -94,7 +100,7 @@ export function applyCombat<T extends Scene>(scene:T,command:CombatCommand,actor
 }
 export function redactCombat<T extends Scene>(scene:T,actor:{role:string;userId:string},visibleIds:Set<string>):T{
   if(actor.role==='master')return scene;
-  const tokens=scene.tokens.map(t=>{if(!t.hideStats&&(t.ownerId===actor.userId||t.shareStats))return t;const{hp:_hp,maxHp:_max,ac:_ac,initiativeMod:_mod,effects:_effects,initiativeGroup:_group,...publicToken}=t;return publicToken;});
+  const tokens=scene.tokens.map(t=>{if(!t.hideStats&&(t.ownerId===actor.userId||t.shareStats))return t;const{hp:_hp,tempHp:_tempHp,maxHp:_max,ac:_ac,initiativeMod:_mod,effects:_effects,initiativeGroup:_group,...publicToken}=t;return publicToken;});
   const order=sortInitiative(scene.combat?.entries??[],scene.combat?.tiePolicy).filter(e=>visibleIds.has(e.tokenId));
   const entries=order.map((entry,i)=>{const t=scene.tokens.find(t=>t.id===entry.tokenId)!;return{...entry,tieOrder:i,...(!t.hideStats&&(t.ownerId===actor.userId||t.shareStats)?{}:{roll:null,total:null,tieRoll:null})};});
   return{...scene,tokens,combat:{...(scene.combat??emptyCombat()),entries,currentId:entries.some(e=>e.id===scene.combat?.currentId)?scene.combat.currentId:null}} as T;

@@ -21,7 +21,7 @@ function menu(options = {}) {
     if (name.includes('/conditions')) return conditions;
     return new Proxy({}, { get: (_target, key) => key });
   }, document: { addEventListener: (name, handler) => listeners.set(name, handler), removeEventListener() {} }, window: { addEventListener: (name, handler) => listeners.set(name, handler), removeEventListener() {} } });
-  let props = { token: { id: 'one', name: 'Hero', size: 1 }, pending: false, radius: 32, position: { x: 100, y: 100 }, viewport: { width: 800, height: 600 }, onAction: (...args) => actions.push(args), ...options };
+  let props = { token: { id: 'one', name: 'Hero', size: 1 }, pending: false, canManageVisibility: false, radius: 32, position: { x: 100, y: 100 }, viewport: { width: 800, height: 600 }, onAction: (...args) => actions.push(args), ...options };
   const render = next => { props = { ...props, ...next }; cursor = 0; const tree = exports.default(props); effects.splice(0).forEach(effect => effect()); return tree; };
   const nodes = node => !node || typeof node !== 'object' ? [] : [node, ...[node.props?.children].flat(Infinity).flatMap(nodes)];
   const find = (tree, label) => nodes(tree).find(node => node.props?.['aria-label'] === label);
@@ -144,4 +144,14 @@ test('status tab exposes all conditions and independently toggles conditions, ex
   view.find(tree, 'Снять все состояния').props.onClick(); assert.equal(view.actions.at(-1)[2], 'clear');
   tree = view.render({ pending: true });
   assert.ok(view.nodes(tree).filter(node => node.type === 'input' || node.type === 'select').every(node => node.props.disabled));
+});
+test('GM context menu can hide or restore a token for players; players do not get this action', () => {
+  const gm = menu({ canManageVisibility: true, token: { id: 'one', name: 'Goblin', size: 1, hidden: false } });
+  let tree = gm.render(); gm.find(tree, 'Дополнительно').props.onClick(); tree = gm.render();
+  gm.find(tree, 'Скрыть для игроков').props.onClick(); assert.equal(gm.actions.at(-1)[1], 'visibility');
+  tree = gm.render({ token: { id: 'one', name: 'Goblin', size: 1, hidden: true } }); gm.find(tree, 'Дополнительно').props.onClick(); tree = gm.render();
+  gm.find(tree, 'Показать игрокам').props.onClick(); assert.equal(gm.actions.at(-1)[1], 'visibility');
+  const player = menu({ token: { id: 'one', name: 'Goblin', size: 1, hidden: false } });
+  tree = player.render(); player.find(tree, 'Дополнительно').props.onClick(); tree = player.render();
+  assert.equal(player.find(tree, 'Скрыть для игроков'), undefined);
 });

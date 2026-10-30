@@ -18,6 +18,19 @@ test('ownership, explored memory and projection remove hidden tokens and GM geom
   assert.ok(moved.fog.explored.p.length>=explored.fog.explored.p.length);
 });
 
+test('hideStats leaves tokens visible while the separate GM visibility command hides them from players only',async()=>{
+  const {createPrototypeScene,commandSchema,applyTableCommand}=await import('../lib/table/scene.ts');
+  const gm={userId:crypto.randomUUID(),name:'GM',role:'master'},player={userId:crypto.randomUUID(),name:'P',role:'player'},roster=[gm,player];
+  const source=createPrototypeScene(crypto.randomUUID(),roster),token=source.tokens.find(value=>!value.ownerId);
+  const scene={...source,tokens:source.tokens.map(value=>value.id===token.id?{...value,hp:7,tempHp:5,maxHp:10,hideStats:true,hidden:false}:value)};
+  const visible=fog.projectScene(scene,player);assert.ok(visible.tokens.some(value=>value.id===token.id));
+  assert.equal(visible.tokens.find(value=>value.id===token.id).hp,undefined);assert.equal(fog.projectScene(scene,gm).tokens.find(value=>value.id===token.id).hp,7);
+  const hidden=applyTableCommand(scene,commandSchema.parse({id:crypto.randomUUID(),sceneId:scene.id,baseRevision:scene.revision,type:'vision',tokenId:token.id,expectedVersion:token.version,visionFeet:token.visionFeet??60,hidden:true}),gm,roster);
+  assert.equal(fog.projectScene(hidden,player).tokens.some(value=>value.id===token.id),false);
+  assert.equal(fog.projectScene(hidden,gm).tokens.some(value=>value.id===token.id),true);
+  assert.throws(()=>applyTableCommand(scene,{id:crypto.randomUUID(),sceneId:scene.id,baseRevision:scene.revision,type:'vision',tokenId:token.id,expectedVersion:token.version,visionFeet:60,hidden:true},player,roster));
+});
+
 test('the map endpoint masks unexplored artwork before bytes reach the client', async()=>{
   const {PNG}=await import('pngjs'),{maskedMap}=await import('../lib/table/fog-map.ts');
   const image=new PNG({width:40,height:28});for(let i=0;i<image.data.length;i+=4){image.data[i]=255;image.data[i+3]=255;}

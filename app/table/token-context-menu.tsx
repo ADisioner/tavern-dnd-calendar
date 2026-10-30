@@ -1,11 +1,11 @@
 'use client';
 import { useEffect, useRef, useState, type CSSProperties, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
-import { MoveHorizontal, RotateCw, Lock, LockOpen, Layers, Copy, Tag, Trash2, Ellipsis } from 'lucide-react';
+import { MoveHorizontal, RotateCw, Lock, LockOpen, Layers, Copy, Tag, Trash2, Ellipsis, Eye, EyeOff } from 'lucide-react';
 import type { TableToken } from '@/lib/table/scene';
 import type { Point } from '@/lib/table/geometry';
 import { CONDITION_IDS, CONDITIONS } from '@/lib/table/conditions';
 
-export type TokenAction = 'smaller' | 'larger' | 'resize' | 'rotate' | 'lock' | 'front' | 'back' | 'duplicate' | 'label' | 'delete' | 'status';
+export type TokenAction = 'smaller' | 'larger' | 'resize' | 'rotate' | 'lock' | 'front' | 'back' | 'duplicate' | 'label' | 'delete' | 'status' | 'visibility';
 export type TokenActionHandler = (token: TableToken, action: TokenAction, value?: string | boolean | number) => void;
 export function tokenMenuPlacement(point: Point, radius: number, viewport: { width: number; height: number }) {
   const r = Math.max(24, Math.min(radius, viewport.width / 2 - 54, viewport.height / 2 - 70));
@@ -15,10 +15,10 @@ export function tokenMenuPlacement(point: Point, radius: number, viewport: { wid
     y: Math.max(Math.max(88, r + 52), Math.min(viewport.height - r - 68, point.y)), radius: r,
     scale: Math.max(0.35, Math.min(0.675, r / 64, maxScale)) };
 }
-export default function TokenContextMenu({ token, pending, radius, position, viewport, onAction, menuRef, resizePixelsPerCell = 80, onResizePreview }: {
+export default function TokenContextMenu({ token, pending, radius, position, viewport, onAction, menuRef, resizePixelsPerCell = 80, onResizePreview, canManageVisibility = false }: {
   token: TableToken; pending: boolean; radius: number; position: Point; viewport: { width: number; height: number };
   onAction: TokenActionHandler; menuRef?: RefObject<HTMLDivElement | null>;
-  resizePixelsPerCell?: number; onResizePreview?: (size: number | null) => void;
+  resizePixelsPerCell?: number; onResizePreview?: (size: number | null) => void; canManageVisibility?: boolean;
 }) {
   const ownRef = useRef<HTMLDivElement>(null), rootRef = menuRef ?? ownRef;
   const [popup, setPopup] = useState<'layer' | 'label' | 'more' | null>(null), [name, setName] = useState(token.name);
@@ -89,7 +89,7 @@ export default function TokenContextMenu({ token, pending, radius, position, vie
       {popup === 'label' && <><form onSubmit={event => { event.preventDefault(); const trimmed = name.trim(); if (trimmed) action('label', trimmed); }}>
         <label>Имя<input aria-label="Имя фигуры" value={name} maxLength={40} disabled={pending} onChange={event => setName(event.target.value)}/></label><button disabled={pending || !name.trim()} type="submit">Сохранить</button>
       </form><label className="token-menu-label-toggle"><input aria-label="Показывать подпись" type="checkbox" checked={token.showLabel !== false} disabled={pending} onChange={event => action('label', event.target.checked)}/>Показывать подпись</label></>}
-      {popup === 'more' && <><div role="tablist" aria-label="Дополнительные настройки"><button className="token-status-tab" id={`status-tab-${token.id}`} role="tab" aria-label="Статус" aria-controls={`status-panel-${token.id}`} aria-selected={statusTab} disabled={pending} onClick={() => setStatusTab(true)}>Статус</button></div>
+      {popup === 'more' && <>{canManageVisibility&&<button aria-label={token.hidden?'Показать игрокам':'Скрыть для игроков'} disabled={pending} onClick={()=>{action('visibility');setPopup(null);}}>{token.hidden?<><Eye size={16}/> Показать игрокам</>:<><EyeOff size={16}/> Скрыть для игроков</>}</button>}<div role="tablist" aria-label="Дополнительные настройки"><button className="token-status-tab" id={`status-tab-${token.id}`} role="tab" aria-label="Статус" aria-controls={`status-panel-${token.id}`} aria-selected={statusTab} disabled={pending} onClick={() => setStatusTab(true)}>Статус</button></div>
         {statusTab && <div id={`status-panel-${token.id}`} role="tabpanel" aria-labelledby={`status-tab-${token.id}`} aria-label="Состояния D&D 5e" className="token-condition-panel">
           {CONDITION_IDS.map(id => <label className="token-condition-option" key={id}><input aria-label={CONDITIONS[id].label} type="checkbox" value={id} checked={token.statuses?.includes(id) ?? false} disabled={pending} onChange={() => action('status', id)}/><svg aria-hidden="true" viewBox="0 0 24 24" className="token-condition-icon" style={{ color: CONDITIONS[id].color }}><path d={CONDITIONS[id].icon}/></svg>{CONDITIONS[id].label}</label>)}
           <label className="token-condition-level">Уровень истощения<select aria-label="Уровень истощения" value={token.exhaustionLevel ?? 1} disabled={pending} onChange={event => action('status', `exhaustion:${event.target.value}`)}>{[1, 2, 3, 4, 5, 6].map(level => <option key={level} value={level}>{level}</option>)}</select></label>
