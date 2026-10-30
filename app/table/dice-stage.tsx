@@ -5,19 +5,20 @@ import * as CANNON from 'cannon-es';
 import { diceHull } from '@/lib/table/dice-geometry';
 import { percentilePair, type RollRecord } from '@/lib/table/dice';
 
-export default function DiceStage({ roll, sound }: { roll: RollRecord; sound: boolean }) {
+export default function DiceStage({ roll, sound, overlay=false }: { roll: RollRecord; sound: boolean; overlay?:boolean }) {
   const host = useRef<HTMLDivElement>(null), [fallback, setFallback] = useState(false);
   useEffect(() => {
     const element = host.current; if (!element) return;
     let renderer: THREE.WebGLRenderer;
-    try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false }); } catch { setFallback(true); return; }
-    const width = Math.max(240, element.clientWidth), height = 230;
+    try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: overlay }); } catch { setFallback(true); return; }
+    const width = Math.max(240, element.clientWidth), height = Math.max(230, element.clientHeight);
     renderer.setSize(width,height); renderer.setPixelRatio(Math.min(devicePixelRatio,2)); element.appendChild(renderer.domElement);
     renderer.domElement.setAttribute('aria-label', `Бросок ${roll.formula}: ${roll.total}`);
-    const scene = new THREE.Scene(); scene.background = new THREE.Color('#171f20');
-    const camera = new THREE.PerspectiveCamera(42,width/height,.1,100); camera.position.set(0,9,8); camera.lookAt(0,0,0);
+    const scene = new THREE.Scene(); scene.background = overlay?null:new THREE.Color('#171f20');
+    const camera = new THREE.PerspectiveCamera(42,width/height,.1,100); camera.position.set(0,12,7); camera.lookAt(0,1,0);
+    const resizeObserver=new ResizeObserver(()=>{const w=Math.max(240,element.clientWidth),h=Math.max(230,element.clientHeight);renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();});resizeObserver.observe(element);
     scene.add(new THREE.HemisphereLight(0xe9efef,0x302820,2.5)); const light = new THREE.DirectionalLight(0xffffff,3); light.position.set(3,8,4); scene.add(light);
-    const floor = new THREE.Mesh(new THREE.BoxGeometry(11,.15,6.4),new THREE.MeshStandardMaterial({color:'#293b39',roughness:.9})); floor.position.y=-.12; scene.add(floor);
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(11,.15,6.4),new THREE.MeshStandardMaterial({color:'#293b39',roughness:.9})); floor.position.y=-.12; if(!overlay)scene.add(floor);
     const world = new CANNON.World({ gravity: new CANNON.Vec3(0,-18,0), allowSleep:true }); world.broadphase = new CANNON.SAPBroadphase(world);
     world.defaultContactMaterial.friction=.45; world.defaultContactMaterial.restitution=.4;
     function barrier(x:number,y:number,z:number,sx:number,sy:number,sz:number) { const body = new CANNON.Body({mass:0,shape:new CANNON.Box(new CANNON.Vec3(sx,sy,sz))}); body.position.set(x,y,z); world.addBody(body); }
@@ -66,7 +67,7 @@ export default function DiceStage({ roll, sound }: { roll: RollRecord; sound: bo
       renderer.render(scene,camera);if(index<239)frame=requestAnimationFrame(draw);
     }
     frame=requestAnimationFrame(draw);
-    return()=>{cancelAnimationFrame(frame);void audio?.close();for(const r of resources){r.geometry.dispose();r.material.dispose();r.texture?.dispose();}floor.geometry.dispose();(floor.material as THREE.Material).dispose();renderer.dispose();renderer.domElement.remove();};
-  },[roll.id,sound]);
+    return()=>{cancelAnimationFrame(frame);resizeObserver.disconnect();void audio?.close();for(const r of resources){r.geometry.dispose();r.material.dispose();r.texture?.dispose();}floor.geometry.dispose();(floor.material as THREE.Material).dispose();renderer.dispose();renderer.domElement.remove();};
+  },[roll.id,sound,overlay]);
   return <div className="dice-stage" ref={host}>{fallback && <p>3D недоступно на этом устройстве. Результат сервера: {roll.total}.</p>}</div>;
 }

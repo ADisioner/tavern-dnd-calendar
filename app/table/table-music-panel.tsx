@@ -53,4 +53,3 @@ export default function TableMusicPanel({ music, disabled, hidden, send, onClose
     </li>)}</ul>
   </section>;
 }
-

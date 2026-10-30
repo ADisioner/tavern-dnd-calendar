@@ -1,6 +1,6 @@
 # Три модуля VTT — D&D 2014
 
-Дата: 2026-10-29. Реализовано и проверено локально. Продакшен и GitHub в этой задаче не обновлялись.
+Дата: 2026-10-29. Реализовано и проверено локально; Site v16 опубликован на https://notgamba.ru, исходный код синхронизирован с GitHub main. Фактические идентификаторы и границы production-проверки приведены в разделе «Публикация».
 
 ## Аудит и архитектура
 
@@ -85,12 +85,23 @@
 - Скриншоты локального QA: `outputs/vtt-2014-qa/dice-all-types.png`, `combat-desktop.png`, `combat-mobile.png`, `fog-gm-controls.png`.
 - Одноразовые аккаунты/кампания/сессии/fixtures удалены штатным cleanup, QA-вкладка закрыта, viewport сброшен. Пользовательский preview5178 оставлен работающим.
 
-Код читает старые документы сцены; обратная совместимость старой версии с новыми JSON-полями не обещается. При откате на прежний код нужен соответствующий checkpoint данных/адаптация JSON, а не только старый bundle. На хостинге новые модули пока не проверялись и не публиковались. Свежие проверки не означают измеренную производительность максимальных сцен на настоящем телефоне.
+Код читает старые документы сцены; обратная совместимость старой версии с новыми JSON-полями не обещается. При откате на прежний код нужен соответствующий checkpoint данных/адаптация JSON, а не только старый bundle. На production проверены только состояние публикации, текущий URL, публичная аудитория и перечень таблиц D1; игровые команды, аккаунты и пользовательские данные production не использовались и не менялись. Производительность максимальных сцен на настоящем телефоне не измерялась.
 
 ## Checkpoints
 
 - `F:\DND CALENDAR\checkpoints\2026-10-29T12-21-28-924Z-before-vtt-dice-fog-initiative.tar.gz`
 - `F:\DND CALENDAR\checkpoints\2026-10-29T12-29-51-091Z-before-fog-module.tar.gz`
 - `F:\DND CALENDAR\checkpoints\2026-10-29T12-44-20-110Z-before-initiative-module.tar.gz`
+- `F:\DND CALENDAR\checkpoints\2026-10-29T13-50-00Z-before-vtt-2014-publication-site-source.tar.gz` — Site source до публикации
 
 Секреты, зависимости, runtime базы и генерируемые артефакты в исходные архивы не включались. Ранние checkpoints сохранены.
+
+
+## Публикация
+
+- Site: версия **16**, status `succeeded`; production URL [https://notgamba.ru](https://notgamba.ru) (deploy endpoint: https://tavern-dnd-party-calendar.auroraroot21.chatgpt.site). Deployment ID: `appgdep_6ae34e655fb48191a3424c7b569db345`; сохранённая версия `appgprj_6ae10ba439488191a2ae1025669c38af~appgver_da7c11be00d081918026b68ca32cab47`; Site source commit `ecf3aa96ebca80249eb602633f2504a094c1a21e`. Environment revision — **3**; hosted settings and secrets were not changed.
+- Read-only `DB` overview confirmed `test_table_measurements` alongside existing tables; no production rows were read or mutated. Production game flows were not exercised.
+- GitHub `ADisioner/tavern-dnd-calendar`, branch `main`: commit `5c44be3891d1dac92e9172bb63fbd0c9cef68deb`, parent `1782091bbfb7b2a42dd1aecd0b122d0dac7827f9`. All **48** changed paths were read back through the native GitHub API; every blob SHA and file content matched the published source.
+- Before publication, the previous Site source was archived at `F:\DND CALENDAR\checkpoints\2026-10-29T13-50-00Z-before-vtt-2014-publication-site-source.tar.gz` and recorded in the checkpoint log.
+
+Связано: [[Текущее состояние]], [[VTT 2014 — кубики, туман и бой]], [[2026-10-29]].

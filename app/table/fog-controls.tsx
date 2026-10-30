@@ -5,7 +5,7 @@ import { assetUrl } from '@/lib/table/assets';
 import type { TableScene, TableMember } from '@/lib/table/scene';
 import type { CommandInput } from './use-table-room';
 export type FogEdit = 'wall'|'door'|'reveal'|'hide';
-export default function FogControls({scene,roster,selectedId,preview,edit,setEdit,disabled,send,onClose}:{scene:TableScene;roster:TableMember[];selectedId:string|null;preview:string|null;edit:FogEdit|null;setEdit:(edit:FogEdit|null)=>void;disabled:boolean;send:(input:CommandInput)=>boolean;onClose:()=>void}) {
+export default function FogControls({scene,roster,selectedId,preview,edit,setEdit,disabled,send,onClose,gmOpacity,onGmOpacity}:{scene:TableScene;roster:TableMember[];selectedId:string|null;preview:string|null;edit:FogEdit|null;setEdit:(edit:FogEdit|null)=>void;disabled:boolean;send:(input:CommandInput)=>boolean;onClose:()=>void;gmOpacity:number;onGmOpacity:(opacity:number)=>void}) {
   const token=scene.tokens.find(t=>t.id===selectedId),fog=scene.fog;
   const [preparing,setPreparing]=useState(false),[mapError,setMapError]=useState('');
   async function normalizeMap(){
@@ -20,7 +20,7 @@ export default function FogControls({scene,roster,selectedId,preview,edit,setEdi
   }
   return <section className="vtt-panel" aria-label="Туман войны"><header><strong><CloudFog size={18}/> Обзор и туман</strong><button className="table-tool" aria-label="Скрыть настройки тумана" onClick={onClose}><X size={18}/></button></header>
     <label>Предпросмотр глазами игрока<select disabled={disabled} value={preview??''} onChange={event=>send({type:'scene-view-player',viewerId:event.target.value||null})}><option value="">Полный обзор ГМа</option>{roster.map(member=><option key={member.userId} value={member.userId}>{member.name}</option>)}</select></label>
-    {preview?<p>Показано серверное представление выбранного игрока. Для редактирования вернитесь к полному обзору.</p>:<>
+    <label>Затемнение тумана для ГМа: {Math.round(gmOpacity*100)}%<input aria-label="Затемнение тумана для ГМа" type="range" min="0" max="100" step="1" value={Math.round(gmOpacity*100)} onChange={event=>onGmOpacity(Number(event.target.value)/100)}/></label>{preview?<p>Показано серверное представление выбранного игрока. Для редактирования вернитесь к полному обзору.</p>:<>
       <label className="vtt-check"><input type="checkbox" checked={!!fog?.enabled} disabled={disabled} onChange={event=>send({type:'fog-config',enabled:event.target.checked})}/> Автоматическое зрение и память карты</label>
       {scene.mapAssetId&&<><button className="small-button" disabled={disabled||preparing} onClick={()=>void normalizeMap()}>{preparing?'Подготовка карты…':'Подготовить карту для тумана'}</button><p>PNG, JPEG и GIF маскируются сервером. Для WebP или карты больше 4 Мп сначала нажмите «Подготовить карту»: создастся PNG-копия. Оригинал останется в библиотеке.</p>{mapError&&<p role="alert">{mapError}</p>}</>}
       <div className="fog-tools">{([['wall','Стена'],['door','Дверь'],['reveal','Открыть область'],['hide','Скрыть область']] as const).map(([mode,label])=><button key={mode} className="small-button" aria-pressed={edit===mode} disabled={disabled} onClick={()=>setEdit(edit===mode?null:mode)}>{label}</button>)}</div>

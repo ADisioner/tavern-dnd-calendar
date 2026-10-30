@@ -39,3 +39,36 @@ test('optional tie rerolls are server generated and explicit NPC groups share on
   let calls=0;scene={...scene,tokens:tokens.map(t=>({...t,initiativeGroup:'goblins'})),combat:{...scene.combat,tiePolicy:'manual'}};
   const grouped=combat.applyCombat(scene,{type:'combat-roll'},gm,()=>{calls++;return 8;});assert.equal(calls,1);assert.deepEqual(grouped.combat.entries.map(e=>e.total),[8,8]);
 });
+
+
+test('zero HP removes current participant, advances round and ends empty combat',()=>{
+  const entries=['a','b'].map((id,i)=>({id,tokenId:'t'+id,roll:20-i,total:20-i,tieOrder:i,tieRoll:null}));
+  const previous={tokens:[{id:'ta',ownerId:null,hp:1},{id:'tb',ownerId:null,hp:1}],combat:{running:true,round:2,currentId:'b',tiePolicy:'manual',entries}};
+  const next=combat.reconcileCombat(previous,{...previous,tokens:[previous.tokens[0],{...previous.tokens[1],hp:0}]});
+  assert.deepEqual(next.combat.entries.map(e=>e.id),['a']);assert.equal(next.combat.currentId,'a');assert.equal(next.combat.round,3);
+  const ended=combat.reconcileCombat(next,{...next,tokens:next.tokens.map(t=>({...t,hp:0}))});assert.equal(ended.combat.running,false);assert.equal(ended.combat.currentId,null);
+});
+test('explicit hidden statistics override ownership and public stats',()=>{
+  const scene={tokens:[{id:'t',ownerId:'p',hp:7,maxHp:10,ac:17,initiativeMod:3,shareStats:true,hideStats:true,effects:[]}],combat:{...combat.emptyCombat(),entries:[{id:'e',tokenId:'t',roll:12,total:15,tieOrder:0,tieRoll:null}]}};
+  const view=combat.redactCombat(scene,{role:'player',userId:'p'},new Set(['t']));assert.equal(view.tokens[0].hp,undefined);assert.equal(view.combat.entries[0].total,null);
+  assert.equal(combat.redactCombat(scene,{role:'master',userId:'g'},new Set(['t'])).tokens[0].hp,7);
+});
+
+
+test('hidden stats persist through room schema and cannot be read or changed by owner',async()=>{
+ const {createRoom,roomCommandSchema,applyRoomCommand,roomDataSchema,roomView}=await import('../lib/table/room.ts');
+ const gm={userId:crypto.randomUUID(),name:'GM',role:'master'},player={userId:crypto.randomUUID(),name:'P',role:'player'},roster=[gm,player];let room=createRoom(crypto.randomUUID(),roster);
+ const token=room.scenes[0].scene.tokens.find(t=>t.ownerId===player.userId);
+ const command=(actor,extra)=>{const scene=room.scenes[0].scene;return applyRoomCommand(room,roomCommandSchema.parse({id:crypto.randomUUID(),sceneId:scene.id,baseRevision:scene.revision,type:'vitals',tokenId:token.id,expectedVersion:scene.tokens.find(t=>t.id===token.id).version,hp:7,maxHp:10,ac:17,initiativeMod:2,hidden:false,shareStats:true,hideStats:true,initiativeGroup:'',...extra}),actor,roster);};
+ room=command(gm,{}).data;room=roomDataSchema.parse(JSON.parse(JSON.stringify(room)));
+ assert.equal(roomView(room,player).scene.tokens.find(t=>t.id===token.id).hp,undefined);
+ assert.throws(()=>command(player,{hideStats:false,hp:8}));assert.throws(()=>command(player,{hp:8}));
+ assert.equal(roomView(room,gm).scene.tokens.find(t=>t.id===token.id).hp,7);
+});
+
+
+test('owner cannot roll initiative for a token whose statistics GM has hidden',()=>{
+ const scene={tokens:[{id:'t',ownerId:'p',hideStats:true,initiativeMod:7}],combat:{...combat.emptyCombat(),entries:[{id:'e',tokenId:'t',roll:null,total:null,tieOrder:0,tieRoll:null}]}};
+ assert.throws(()=>combat.applyCombat(scene,{type:'combat-roll',participantId:'e'},{role:'player',userId:'p'},()=>12));
+ assert.equal(combat.applyCombat(scene,{type:'combat-roll',participantId:'e'},{role:'master',userId:'g'},()=>12).combat.entries[0].total,19);
+});

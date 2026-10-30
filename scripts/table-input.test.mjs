@@ -9,6 +9,7 @@ import * as sceneModule from '../lib/table/scene.ts';
 import * as conditions from '../lib/table/conditions.ts';
 import * as measurement from '../lib/table/measurement.ts';
 import * as motion from '../lib/table/motion.ts';
+import * as fog from '../lib/table/fog.ts';
 
 // Render the actual canvas handlers without a browser or GPU.
 function canvas(tool = 'select', options = {}) {
@@ -18,7 +19,7 @@ function canvas(tool = 'select', options = {}) {
   const react = {
     useState: value => { const i = stateCursor++; if (!(i in states)) states[i] = value?.scale && options.camera ? options.camera : value; return [states[i], next => { states[i] = typeof next === 'function' ? next(states[i]) : next; }]; },
     useRef: value => refs[refCursor++] ?? (refs[refCursor - 1] = { current: value }),
-    useEffect: effect => effects.push(effect), useCallback: callback => callback,
+    useMemo: callback => callback(), useEffect: effect => effects.push(effect), useCallback: callback => callback,
   };
   const exports = {};
   const source = ts.transpileModule(fs.readFileSync(new URL('../app/table/table-canvas.tsx', import.meta.url), 'utf8'), {
@@ -34,6 +35,7 @@ function canvas(tool = 'select', options = {}) {
     if (name.includes('/measurement')) return measurement;
     if (name.includes('/scene')) return { ...sceneModule, canMoveToken: () => true };
     if (name.includes('/motion')) return motion;
+    if (name.includes('/fog')) return fog;
     return {};
   }, crypto: { randomUUID: () => 'stroke-one' }, document: { querySelector: () => null }, HTMLElement: class {}, window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: () => {} } });
   const token = { id: 'one', x: 40, y: 40, size: 1, name: 'Hero' };

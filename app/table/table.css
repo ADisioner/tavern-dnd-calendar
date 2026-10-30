@@ -209,3 +209,11 @@
 .fog-tools{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:10px 0}.fog-tools button[aria-pressed=true]{border-color:#dfc58d;background:#554d38}.fog-wall-list{max-height:220px;overflow:auto;margin:10px 0}.fog-wall-list>div{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:5px 0;border-bottom:1px solid var(--table-line)}.vtt-panel>label{margin-bottom:10px}.vtt-panel p{font-size:12px;line-height:1.5}
 .combat-actions{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}.combat-actions .small-button{padding:6px 9px}.combat-list{list-style:none;padding:0;margin:8px 0}.combat-list>li{padding:9px;border:1px solid var(--table-line);border-radius:5px;margin-bottom:6px}.combat-list>li.combat-active{border-color:#78bd95;background:#78bd9512}.combat-token{display:flex;justify-content:space-between;gap:8px;width:100%;padding:0;background:transparent;border:0;color:inherit;text-align:left}.combat-token span{font-size:22px;color:#e9cc8e}.combat-list small{display:block;font-size:11px;line-height:1.6;opacity:.85}.combat-character{border-top:1px solid var(--table-line);padding-top:8px}.combat-effect-form{margin-top:16px;padding-top:10px;border-top:1px solid var(--table-line)}.combat-character h3{font-size:16px;margin:6px 0 12px}.combat-character ul{padding-left:18px;font-size:12px}
 .vtt-panel input,.vtt-panel select{background:var(--table-raised)}
+
+.table-dice-overlay{position:absolute;inset:0;z-index:15;pointer-events:none;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.table-dice-overlay .dice-stage{width:100%;height:100%;margin:0;border-radius:0;position:absolute;inset:0}
+.table-dice-result{position:absolute;bottom:72px;max-width:calc(100% - 32px);padding:10px 16px;border:1px solid var(--table-line);border-radius:8px;background:var(--table-panel);color:var(--table-text);text-align:center}
+.table-dice-result strong{font-size:24px;color:#efd18b}.combat-mini{max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.vtt-quick-tools .table-tool:has(.combat-mini){width:auto;flex:0 0 auto;gap:6px;padding:0 8px}
+@media(max-width:600px){.combat-mini{max-width:85px}.table-dice-result{bottom:64px}}
+
+.vtt-quick-tools .table-tool svg{flex-shrink:0}

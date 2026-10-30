@@ -30,3 +30,10 @@ test('the map endpoint masks unexplored artwork before bytes reach the client', 
   const letterbox=PNG.sync.read(Buffer.from(maskedMap(PNG.sync.write(square),'image/png',revealed,{userId:'p',role:'player'},'square-map')));
   assert.equal(letterbox.data[(40*1600+40)*4],21);assert.equal(letterbox.data[(40*1600+800)*4],255);
 });
+
+
+test('GM fog overview combines player vision and memory without changing player projection',async()=>{
+ const {gmFogView,emptyFog}=await import('../lib/table/fog.ts');
+ const scene={width:400,height:400,gridSize:50,drawings:[],tokens:[{id:'p',ownerId:'a',x:100,y:100,visionFeet:5},{id:'npc',ownerId:null,x:300,y:300,visionFeet:60}],fog:{...emptyFog(),enabled:true,explored:{a:['0:0'],b:['20:0']}}};
+ const view=gmFogView(scene);assert.equal(view.polygons.length,1);assert.deepEqual(view.exploredCells.sort(),['0:0','20:0']);assert.equal(scene.fog.view,undefined);
+});

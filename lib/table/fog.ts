@@ -62,3 +62,8 @@ export function projectScene<T extends FogScene>(scene:T,actor:Viewer):T {
   const fog=scene.fog;
   return {...safe,drawings:scene.drawings.filter(d=>d.points.every((value,i)=>i%2||pointVisible(scene,actor,{x:value,y:d.points[i+1]}))),fog:{enabled:true,walls:[],manual:[],explored:{},view:{viewerId:actor.userId,polygons:sources(scene,actor).map(token=>visiblePolygon(scene,token)),exploredCells:fog.explored[actor.userId]??[],areas:fog.manual}}};
 }
+
+// Local GM-only overview. Never attach this union to a player's server view.
+export function gmFogView(scene:FogScene):NonNullable<Fog['view']>{
+ return {viewerId:'gm-overview',polygons:scene.tokens.filter(t=>t.ownerId&&!t.hidden&&(t.visionFeet??60)>0).map(t=>visiblePolygon(scene,t)),exploredCells:[...new Set(Object.values(scene.fog?.explored??{}).flat())],areas:scene.fog?.manual??[]};
+}

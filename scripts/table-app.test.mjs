@@ -36,7 +36,7 @@ function app(role = 'player') {
   function render() { cursor = 0; return exports.default({ campaignId: 'campaign' }); }
   function nodes(tree) { return !tree || typeof tree !== 'object' ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...nodes(tree.props?.children)]; }
   const canvas = () => nodes(render()).find(node => node.type === 'Canvas').props;
-  return { tokens, sent, render, canvas, keyboard: () => keyboard, nodes };
+  return { scene, tokens, sent, render, canvas, keyboard: () => keyboard, nodes };
 }
 
 test('music window hides locally without sending a shared pause and retains the iframe', () => {
@@ -212,3 +212,12 @@ test('ruler button activates the line and its menu escapes the clipping toolbar'
   assert.ok(view.nodes(main).some(node => node.props?.className === 'table-ruler-menu'));
 });
 
+
+test('minimizing initiative retains panel and server combat, and exposes current turn in dock',()=>{
+ const view=app('master');view.scene.combat={running:true,round:3,currentId:'e',entries:[{id:'e',tokenId:'a'}]};
+ let nodes=view.nodes(view.render());const toggle=()=>nodes.find(n=>n.type==='button'&&n.props?.['aria-label']==='Инициатива и бой').props.onClick();
+ const panel=()=>nodes.find(n=>n.props?.onClose&&n.props?.onSelect&&n.props?.scene===view.scene);
+ assert.equal(panel().props.open,false);assert.ok(nodes.some(n=>n.props?.className==='combat-mini'));
+ toggle();nodes=view.nodes(view.render());assert.equal(panel().props.open,true);
+ panel().props.onClose();nodes=view.nodes(view.render());assert.equal(panel().props.open,false);assert.equal(panel().props.scene.combat.currentId,'e');assert.equal(view.sent.length,0);
+});

@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Stage, Layer, Image as CanvasImage, Line, Rect, Group, Circle, Path, Text, Shape } from 'react-konva';
 import type Konva from 'konva';
 import { ZoomIn, ZoomOut, Scan } from 'lucide-react';
@@ -12,7 +12,7 @@ import { areaPoints, distanceFeet, snapMeasurePoint, type AreaMode, type Measure
 import type { SharedMeasurement } from '@/lib/table/measurement';
 import TokenContextMenu, { tokenMenuPlacement, type TokenActionHandler } from './token-context-menu';
 import { CONDITIONS } from '@/lib/table/conditions';
-import { FOG_CELL } from '@/lib/table/fog';
+import { FOG_CELL, gmFogView } from '@/lib/table/fog';
 import type { FogEdit } from './fog-controls';
 
 type CanvasDrawing = { id: string; color: string; width: number; points: number[] };
@@ -40,10 +40,10 @@ export type TableCanvasProps = {
   brushColor?: string; brushWidth?: number; onDraw?: (drawing: CanvasDrawing) => void; onErase?: (drawingId: string) => void;
   onTokenAction?: TokenActionHandler;
   measurements?: SharedMeasurement[]; onMeasurement?: (message: Record<string, unknown>) => void;
-  fogEdit?:FogEdit|null; onFogGesture?:(mode:FogEdit,from:Point,to:Point)=>void;
+  gmFogOpacity?:number; fogEdit?:FogEdit|null; onFogGesture?:(mode:FogEdit,from:Point,to:Point)=>void;
   motionStore: MotionStore; onMotionStart: (token: TableToken) => boolean; onMotionPreview: (token: TableToken, point: Point, duration?: number) => boolean; onMotionEnd: (tokenId: string) => void;
 };
-export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, measureMode = 'line', snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, measurements = [], onMeasurement, fogEdit, onFogGesture, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
+export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, measureMode = 'line', snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, measurements = [], onMeasurement, gmFogOpacity=.1, fogEdit, onFogGesture, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null), stageRef = useRef<Konva.Stage>(null);
   const [viewport, setViewport] = useState({ width: 800, height: 600 });
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 0.5 });
@@ -69,6 +69,12 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     if (action === 'resize' && typeof value === 'number') setResizePreview({ id: token.id, version: token.version, size: value, committed: true });
     onTokenAction?.(token, action, value);
   };
+  const gmOverlay=actor.role==='master'&&!scene.fog?.view&&scene.fog?.enabled;
+  const fogView=useMemo(()=>scene.fog?.view??(gmOverlay?gmFogView(scene):undefined),[scene,gmOverlay]);
+  const fogMask=useMemo(()=>{if(!fogView)return undefined;const canvas=document.createElement('canvas');canvas.width=scene.width;canvas.height=scene.height;const ctx=canvas.getContext('2d');if(!ctx)return undefined;const view=fogView;ctx.fillStyle='#080e11';ctx.fillRect(0,0,scene.width,scene.height);
+          ctx.globalCompositeOperation='destination-out';ctx.fillStyle='rgba(0,0,0,0.35)';for(const key of view.exploredCells){const [x,y]=key.split(':').map(Number);ctx.fillRect(x,y,FOG_CELL,FOG_CELL);}
+          ctx.fillStyle='#000';for(const polygon of view.polygons){if(!polygon.length)continue;ctx.beginPath();polygon.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.fill();}
+          for(const area of view.areas){ctx.globalCompositeOperation=area.reveal?'destination-out':'source-over';ctx.fillStyle=area.reveal?'#000':'#080e11';ctx.fillRect(area.x,area.y,area.width,area.height);}return canvas;},[fogView,scene.width,scene.height]);
   const movable = (token: TableToken) => !fogEdit && (!scene.fog?.enabled || actor.role==='master'&&!scene.fog.view || token.ownerId===actor.userId) && canMoveToken(token, actor) && !linkedTokens(scene, token).some(member => member.locked);
   const selectedSet = new Set(selectedIds ?? (selectedId ? [selectedId] : []));
   const clearSharedMeasurement = () => { const shared = sharedMeasurement.current; if (shared) onMeasurement?.({ type: 'measurement-clear', measurementId: shared.measurementId, sceneId: scene.id, seq: ++shared.seq }); sharedMeasurement.current = null; };
@@ -351,12 +357,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         </Group>;
       })}</Layer>
       <Layer name="fog-overlay" listening={false}>
-        {scene.fog?.view&&<Shape sceneFunc={context=>{
-          const ctx=context._context,view=scene.fog.view!;ctx.save();ctx.fillStyle='#080e11';ctx.fillRect(0,0,scene.width,scene.height);
-          ctx.globalCompositeOperation='destination-out';ctx.fillStyle='rgba(0,0,0,0.35)';for(const key of view.exploredCells){const [x,y]=key.split(':').map(Number);ctx.fillRect(x,y,FOG_CELL,FOG_CELL);}
-          ctx.fillStyle='#000';for(const polygon of view.polygons){if(!polygon.length)continue;ctx.beginPath();polygon.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.fill();}
-          for(const area of view.areas){ctx.globalCompositeOperation=area.reveal?'destination-out':'source-over';ctx.fillStyle=area.reveal?'#000':'#080e11';ctx.fillRect(area.x,area.y,area.width,area.height);}ctx.restore();
-        }}/>}
+        {fogMask&&<CanvasImage image={fogMask} opacity={gmOverlay?gmFogOpacity:1}/> }
         {actor.role==='master'&&!scene.fog?.view&&(scene.fog?.walls??[]).map(wall=><Line key={wall.id} points={[wall.a.x,wall.a.y,wall.b.x,wall.b.y]} stroke={wall.door?(wall.open?'#71cba9':'#f0ba67'):'#c7d2d8'} strokeWidth={4/camera.scale} dash={wall.open?[7/camera.scale,6/camera.scale]:undefined}/>)}
         {gesture?.kind==='fog'&&<Line points={gesture.mode==='wall'||gesture.mode==='door'?[gesture.from.x,gesture.from.y,gesture.to.x,gesture.to.y]:[gesture.from.x,gesture.from.y,gesture.to.x,gesture.from.y,gesture.to.x,gesture.to.y,gesture.from.x,gesture.to.y]} closed={gesture.mode==='reveal'||gesture.mode==='hide'} stroke="#e4c587" strokeWidth={2/camera.scale} dash={[6/camera.scale,4/camera.scale]}/>}
       </Layer>
