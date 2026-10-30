@@ -39,11 +39,11 @@ export type TableCanvasProps = {
   pending: boolean; onSelect: (id: string | null, additive?: boolean) => void; onSelectMany?: (ids: string[], additive?: boolean) => void; onMove: (token: TableToken, point: Point) => boolean;
   brushColor?: string; brushWidth?: number; onDraw?: (drawing: CanvasDrawing) => void; onErase?: (drawingId: string) => void;
   onTokenAction?: TokenActionHandler;
-  measurements?: SharedMeasurement[]; onMeasurement?: (message: Record<string, unknown>) => void;
+  measurements?: SharedMeasurement[]; onMeasurement?: (message: Record<string, unknown>) => void; showRemoteCursors?: boolean;
   gmFogOpacity?:number; fogEdit?:FogEdit|null; onFogGesture?:(mode:FogEdit,from:Point,to:Point)=>void;
   motionStore: MotionStore; onMotionStart: (token: TableToken) => boolean; onMotionPreview: (token: TableToken, point: Point, duration?: number) => boolean; onMotionEnd: (tokenId: string) => void;
 };
-export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, measureMode = 'line', snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, measurements = [], onMeasurement, gmFogOpacity=.1, fogEdit, onFogGesture, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
+export default function TableCanvas({ scene, actor, selectedId, selectedIds, tool, measureMode = 'line', snap, pending, onSelect, onSelectMany, brushColor = '#efd18b', brushWidth = 4, onDraw, onErase, onTokenAction, measurements = [], onMeasurement, showRemoteCursors=true, gmFogOpacity=.1, fogEdit, onFogGesture, motionStore, onMotionStart, onMotionPreview, onMotionEnd }: TableCanvasProps) {
   const wrapRef = useRef<HTMLDivElement>(null), stageRef = useRef<Konva.Stage>(null);
   const [viewport, setViewport] = useState({ width: 800, height: 600 });
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 0.5 });
@@ -58,6 +58,13 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
   const [measurePreview, setMeasurePreview] = useState<MeasureGesture | null>(null);
   const measurePreviewRef = useRef<MeasureGesture | null>(null);
   const sharedMeasurement = useRef<{ measurementId: string; seq: number } | null>(null);
+  const cursorTrack = useRef<{ measurementId: string; seq: number } | null>(null);
+  const reportCursor = (point: Point | null) => {
+    if (!onMeasurement) return;
+    if (!point) { const active=cursorTrack.current; if(active)onMeasurement({type:'measurement-clear',measurementId:active.measurementId,sceneId:scene.id,seq:++active.seq}); cursorTrack.current=null; return; }
+    const active=cursorTrack.current??(cursorTrack.current={measurementId:crypto.randomUUID(),seq:-1});
+    onMeasurement({type:'measurement-frame',measurementId:active.measurementId,sceneId:scene.id,seq:++active.seq,mode:'cursor',from:point,to:point});
+  };
   const updateMeasurePreview = (next: MeasureGesture | null) => { measurePreviewRef.current = next; setMeasurePreview(next); };
   const [movementPreview, setMovementPreview] = useState<{ tokenId: string; from: Point; to: Point } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -264,7 +271,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       onDragEnd={event => { if (event.target === stageRef.current) setCamera(current => ({ ...current, x: event.target.x(), y: event.target.y() })); }}
       onWheel={event => { event.evt.preventDefault(); const point = stageRef.current?.getPointerPosition(); if (point) setCamera(current => zoomAt(current, point, event.evt.deltaY < 0 ? 1.12 : 1 / 1.12)); }}
       onMouseDown={event => { if (event.evt.button === 0) beginGesture(event.target === stageRef.current, event.evt.shiftKey); }}
-      onMouseMove={moveGesture} onMouseUp={finishGesture} onMouseLeave={finishGesture}
+      onMouseMove={()=>{moveGesture();const point=worldPointer();setPointer(point);reportCursor(point);}} onMouseUp={finishGesture} onMouseLeave={()=>{finishGesture();reportCursor(null);}}
       onTouchStart={event => {
         if (event.evt.touches.length >= 2) { cancelGesture(); finishTokenDrags(); stageRef.current?.stopDrag(); touchRef.current = null; pinching.current = true; }
         else if (!pinching.current) {
@@ -353,7 +360,8 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
             {token.statuses.length > 4 && <Text text={`+${token.statuses.length - 4}`} x={0} y={43} width={42} height={15} align="center" fontSize={11} fill="#f7e8ca" stroke="#202525" strokeWidth={3} fillAfterStrokeEnabled/>}
           </Group>}
           {token.ownerId && <Circle radius={5} x={radius * 0.75} y={-radius * 0.7} fill="#a9c496" stroke="#202723" strokeWidth={2} listening={false}/>}
-          {token.hp!==undefined&&token.maxHp!==undefined&&<Group listening={false} y={radius+26}><Rect x={-radius} width={radius*2} height={5/camera.scale} fill="#351f25" cornerRadius={2/camera.scale}/><Rect x={-radius} width={radius*2*Math.min(1,token.hp/token.maxHp)} height={5/camera.scale} fill={token.hp?'#78bd95':'#be7180'} cornerRadius={2/camera.scale}/><Text text={`${token.hp}/${token.maxHp}`} x={-radius} y={7/camera.scale} width={radius*2} align="center" fontSize={10/camera.scale} fill="#f7e8ca" stroke="#202525" strokeWidth={2/camera.scale} fillAfterStrokeEnabled/></Group>}
+          {actor.role==='master'&&token.hidden&&!scene.fog?.view&&<Group listening={false} x={radius*0.7} y={-radius*0.7} scaleX={1/camera.scale} scaleY={1/camera.scale}><Circle radius={10} fill="#202525" stroke="#efd18b" strokeWidth={1.5}/><Path data="M3 12s3-6 9-6 9 6 9 6-3 6-9 6-9-6-9-6ZM9.88 9.88a3 3 0 0 0 4.24 4.24M3 3l18 18" x={-7} y={-7} scaleX={14/24} scaleY={14/24} stroke="#efd18b" strokeWidth={2.5} lineCap="round" lineJoin="round" fillEnabled={false}/></Group>}
+          {scene.combat?.running&&token.hp!==undefined&&token.maxHp!==undefined&&scene.combat.entries.some(entry=>entry.tokenId===token.id)&&<Group listening={false} y={radius+26}><Rect x={-radius} width={radius*2} height={5/camera.scale} fill="#351f25" cornerRadius={2/camera.scale}/><Rect x={-radius} width={radius*2*Math.min(1,token.hp/token.maxHp)} height={5/camera.scale} fill={token.hp?'#78bd95':'#be7180'} cornerRadius={2/camera.scale}/><Text text={`${token.hp}/${token.maxHp}`} x={-radius} y={7/camera.scale} width={radius*2} align="center" fontSize={10/camera.scale} fill="#f7e8ca" stroke="#202525" strokeWidth={2/camera.scale} fillAfterStrokeEnabled/></Group>}
         </Group>;
       })}</Layer>
       <Layer name="fog-overlay" listening={false}>
@@ -362,14 +370,15 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
         {gesture?.kind==='fog'&&<Line points={gesture.mode==='wall'||gesture.mode==='door'?[gesture.from.x,gesture.from.y,gesture.to.x,gesture.to.y]:[gesture.from.x,gesture.from.y,gesture.to.x,gesture.from.y,gesture.to.x,gesture.to.y,gesture.from.x,gesture.to.y]} closed={gesture.mode==='reveal'||gesture.mode==='hide'} stroke="#e4c587" strokeWidth={2/camera.scale} dash={[6/camera.scale,4/camera.scale]}/>}
       </Layer>
       <Layer name="measurement-overlay" listening={false}>
-        {measurements.filter(value => value.sceneId === scene.id && value.userId !== actor.userId).map(value => {
-          const points = value.mode === 'move' ? [value.from, value.to] : areaPoints(value.mode, value.from, value.to, scene.gridSize), distance = distanceFeet(value.from, value.to, scene.gridSize);
+        {measurements.filter(value => value.sceneId === scene.id && value.userId !== actor.userId && value.mode !== 'cursor').map(value => {
+          const points = value.mode === 'move' ? [value.from, value.to] : areaPoints(value.mode as AreaMode, value.from, value.to, scene.gridSize), distance = distanceFeet(value.from, value.to, scene.gridSize);
           const measureText = value.mode === 'sphere' ? `радиус ${formatFeet(distance)}` : value.mode === 'square' ? `сторона ${formatFeet(points.length > 1 ? Math.abs(points[1].x - points[0].x) / scene.gridSize * 5 : distance)}` : formatFeet(distance);
           return <Group key={value.measurementId}>
             {value.mode !== 'line' ? <Line points={points.flatMap(point => [point.x, point.y])} closed fill="#79d7ce" opacity={0.12} stroke="#79d7ce" strokeWidth={2.5 / camera.scale} lineJoin="round"/> : <Line points={points.flatMap(point => [point.x, point.y])} stroke="#79d7ce" strokeWidth={3 / camera.scale} dash={[8 / camera.scale, 5 / camera.scale]} lineCap="round"/>}
             <Text x={value.to.x + 10 / camera.scale} y={value.to.y - 22 / camera.scale} text={`${value.name} · ${measureText}`} fontSize={13 / camera.scale} fill="#baf4ed" stroke="#202733" strokeWidth={3 / camera.scale} paintOrder="stroke"/>
           </Group>;
         })}
+        {showRemoteCursors&&measurements.filter(value=>value.sceneId===scene.id&&value.userId!==actor.userId&&value.mode==='cursor').map(value=><Group key={`cursor:${value.userId}`} x={value.from.x} y={value.from.y} listening={false}><Line points={[0,0,0,17/camera.scale,5/camera.scale,12/camera.scale,11/camera.scale,21/camera.scale,15/camera.scale,19/camera.scale,9/camera.scale,10/camera.scale,17/camera.scale,9/camera.scale]} closed fill="#efd18b" stroke="#242525" strokeWidth={1/camera.scale}/><Text text={value.name} x={13/camera.scale} y={12/camera.scale} fontSize={11/camera.scale} fill="#fff0d2" stroke="#242525" strokeWidth={3/camera.scale} fillAfterStrokeEnabled/></Group>)}
         {activeMeasure && <>
           {activeMeasure.mode !== 'line' && <Line name="measurement-shape" points={measurePoints.flatMap(point => [point.x, point.y])} closed fill="#a78bfa" opacity={0.14} stroke="#c6a7ff" strokeWidth={2.5 / camera.scale} lineJoin="round"/>}
           {activeMeasure.mode === 'line' && <><Line name="measurement-shape" points={measurePoints.flatMap(point => [point.x, point.y])} stroke="#c6a7ff" strokeWidth={3 / camera.scale} dash={[8 / camera.scale, 5 / camera.scale]} lineCap="round"/><Circle x={measurePoints[0].x} y={measurePoints[0].y} radius={4 / camera.scale} fill="#c6a7ff"/><Circle x={measurePoints.at(-1)!.x} y={measurePoints.at(-1)!.y} radius={4 / camera.scale} fill="#c6a7ff"/></>}

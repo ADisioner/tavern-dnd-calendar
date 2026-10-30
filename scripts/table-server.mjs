@@ -198,7 +198,7 @@ export async function startTableServer({ secret, stateDirectory = path.resolve('
     if (!scene || !message.from || !message.to || !message.mode) return;
     const current = room.measurements.get(key);
     if (current && (current.socket !== socket || current.measurementId !== message.measurementId && message.seq !== 0 || current.measurementId === message.measurementId && message.seq <= current.seq)) return;
-    const point = value => snapMeasurePoint({ x: Math.max(0, Math.min(scene.width, value.x)), y: Math.max(0, Math.min(scene.height, value.y)) }, scene.gridSize);
+    const point = value => { const bounded = { x: Math.max(0, Math.min(scene.width, value.x)), y: Math.max(0, Math.min(scene.height, value.y)) }; return message.mode === 'cursor' ? bounded : snapMeasurePoint(bounded, scene.gridSize); };
     const next = { measurementId: message.measurementId, sceneId: message.sceneId, userId: peer.actor.userId, name: peer.actor.name, mode: message.mode, from: point(message.from), to: point(message.to), seq: message.seq, socket };
     room.measurements.set(key, next);
     const elapsed = Date.now() - (peer.measureSentAt ?? 0);

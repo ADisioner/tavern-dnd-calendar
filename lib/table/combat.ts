@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { CONDITION_IDS } from './conditions.ts';
-import { randomDie } from './dice.ts';
+import { evaluateDice, randomDie } from './dice.ts';
 export const effectSchema=z.object({id:z.string().uuid(),name:z.string().trim().min(1).max(80),rounds:z.number().int().min(1).max(100).nullable(),condition:z.enum(CONDITION_IDS).optional()}).strict();
 export const participantSchema=z.object({id:z.string().uuid(),tokenId:z.string().uuid(),roll:z.number().int().min(1).max(20).nullable(),total:z.number().int().nullable(),tieOrder:z.number().int().nonnegative(),tieRoll:z.number().int().min(1).max(20).nullable()}).strict();
-export const combatSchema=z.object({entries:z.array(participantSchema).max(150),running:z.boolean(),round:z.number().int().min(0).max(100000),currentId:z.string().uuid().nullable(),tiePolicy:z.enum(['manual','reroll'])}).strict();
-export const emptyCombat=()=>({entries:[],running:false,round:0,currentId:null,tiePolicy:'manual' as const});
+export const combatSchema=z.object({entries:z.array(participantSchema).max(150),running:z.boolean(),round:z.number().int().min(0).max(100000),currentId:z.string().uuid().nullable(),tiePolicy:z.enum(['manual','reroll']),lastAttack:z.object({attackerName:z.string().max(80),targetName:z.string().max(80),attackFormula:z.string().max(160),attackTotal:z.number().int(),hit:z.boolean(),damageFormula:z.string().max(160).optional(),damageTotal:z.number().int().optional()}).nullable().optional()}).strict();
+export const emptyCombat=()=>({entries:[],running:false,round:0,currentId:null,tiePolicy:'manual' as const,lastAttack:null});
 export const combatTokenFields={hp:z.number().int().min(0).max(1000000).optional(),tempHp:z.number().int().min(0).max(1000000).optional(),maxHp:z.number().int().min(1).max(1000000).optional(),ac:z.number().int().min(0).max(60).optional(),initiativeMod:z.number().int().min(-20).max(40).optional(),shareStats:z.boolean().optional(),hideStats:z.boolean().optional(),initiativeGroup:z.string().trim().max(40).optional(),effects:z.array(effectSchema).max(20).optional()};
 const envelope=z.object({id:z.string().uuid(),sceneId:z.string().uuid().optional(),baseRevision:z.number().int().nonnegative()});
 export const combatCommandSchema=z.discriminatedUnion('type',[
@@ -14,6 +14,7 @@ export const combatCommandSchema=z.discriminatedUnion('type',[
   envelope.extend({type:z.literal('combat-start')}).strict(),envelope.extend({type:z.literal('combat-next')}).strict(),envelope.extend({type:z.literal('combat-end')}).strict(),
   envelope.extend({type:z.literal('combat-policy'),policy:z.enum(['manual','reroll'])}).strict(),
   envelope.extend({type:z.literal('combat-order'),participantIds:z.array(z.string().uuid()).max(150)}).strict(),
+  envelope.extend({type:z.literal('combat-attack'),attackerTokenId:z.string().uuid(),targetTokenId:z.string().uuid(),attackFormula:z.string().trim().min(1).max(160),damageFormula:z.string().trim().min(1).max(160)}).strict(),
   envelope.extend({type:z.literal('combat-adjust'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),operation:z.enum(['damage','heal']),amount:z.number().int().min(1).max(1000000)}).strict(),
   envelope.extend({type:z.literal('vitals'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),hp:z.number().int().min(0).max(1000000),tempHp:z.number().int().min(0).max(1000000).optional(),maxHp:z.number().int().min(1).max(1000000),ac:z.number().int().min(0).max(60),initiativeMod:z.number().int().min(-20).max(40),hidden:z.boolean(),shareStats:z.boolean(),hideStats:z.boolean().optional(),initiativeGroup:z.string().trim().max(40)}).strict(),
   envelope.extend({type:z.literal('effect-add'),tokenId:z.string().uuid(),expectedVersion:z.number().int().nonnegative(),effect:effectSchema}).strict(),
@@ -21,7 +22,7 @@ export const combatCommandSchema=z.discriminatedUnion('type',[
 ]);
 export type CombatState=z.infer<typeof combatSchema>;
 export type CombatCommand=z.infer<typeof combatCommandSchema>;
-type CombatToken={id:string;ownerId:string|null;version?:number;hp?:number;tempHp?:number;maxHp?:number;ac?:number;initiativeMod?:number;hidden?:boolean;shareStats?:boolean;hideStats?:boolean;initiativeGroup?:string;statuses?:string[];effects?:z.infer<typeof effectSchema>[]};
+type CombatToken={id:string;name?:string;ownerId:string|null;version?:number;hp?:number;tempHp?:number;maxHp?:number;ac?:number;initiativeMod?:number;hidden?:boolean;shareStats?:boolean;hideStats?:boolean;initiativeGroup?:string;statuses?:string[];effects?:z.infer<typeof effectSchema>[]};
 type Scene={tokens:CombatToken[];combat:CombatState};
 class CombatError extends Error {code:string;constructor(code:string,message:string){super(message);this.code=code;}}
 export function sortInitiative<T extends {id:string;total:number|null;tieOrder:number;tieRoll?:number|null}>(entries:T[],policy:string='manual'):T[]{return [...entries].sort((a,b)=>(b.total??-Infinity)-(a.total??-Infinity)||(policy==='reroll'?(b.tieRoll??0)-(a.tieRoll??0):0)||a.tieOrder-b.tieOrder||a.id.localeCompare(b.id));}
@@ -65,6 +66,18 @@ export function applyCombat<T extends Scene>(scene:T,command:CombatCommand,actor
       if(effect?.condition&&!token.effects.some(e=>e.condition===effect.condition))token.statuses=token.statuses.filter(s=>s!==effect.condition);
     }
     token.version=(token.version??0)+1;
+    return reconcileCombat(scene,next as T);
+  }
+  if(command.type==='combat-attack'){
+    if(!state.running||!state.currentId)throw new CombatError('invalid','Бой ещё не начат.');
+    const active=state.entries.find(e=>e.id===state.currentId),attacker=next.tokens.find(t=>t.id===command.attackerTokenId),target=next.tokens.find(t=>t.id===command.targetTokenId);
+    if(!active||active.tokenId!==command.attackerTokenId)throw new CombatError('forbidden','Атаковать можно только токеном, чей сейчас ход.');
+    if(!attacker||!target||attacker.id===target.id)throw new CombatError('missing','Выберите токен атакующего и цель.');
+    if(!gm&&(attacker.ownerId!==actor.userId||attacker.hideStats||target.hidden||target.ownerId===actor.userId))throw new CombatError('forbidden','Нет доступа к атакующему или цели.');
+    let attack;try{attack=evaluateDice(command.attackFormula,'normal',random);}catch(error){throw new CombatError('invalid',(error as Error).message);}
+    const hit=attack.total>=(target.ac??10);let damageTotal:number|undefined;
+    if(hit){let damage;try{damage=evaluateDice(command.damageFormula,'normal',random);}catch(error){throw new CombatError('invalid',(error as Error).message);}damageTotal=Math.max(0,damage.total);const maxHp=target.maxHp??10;let hp=Math.min(maxHp,target.hp??maxHp),tempHp=target.tempHp??0;const absorbed=Math.min(tempHp,damageTotal);tempHp-=absorbed;hp=Math.max(0,hp-(damageTotal-absorbed));Object.assign(target,{hp,tempHp,maxHp,version:(target.version??0)+1});}
+    state.lastAttack={attackerName:attacker.name??'Атакующий',targetName:target.name??'Цель',attackFormula:command.attackFormula,attackTotal:attack.total,hit,...(hit?{damageFormula:command.damageFormula,damageTotal}:{})};
     return reconcileCombat(scene,next as T);
   }
   if(!gm&&command.type!=='combat-roll')throw new CombatError('forbidden','Боем управляет мастер.');

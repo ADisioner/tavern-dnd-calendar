@@ -37,6 +37,7 @@ test('shared measurements validate bounded-shaped ephemeral frames and explicit 
   const measurementId = crypto.randomUUID(), sceneId = crypto.randomUUID();
   assert.equal(measurementMessageSchema.parse({ type: 'measurement-frame', measurementId, sceneId, seq: 2, mode: 'cone', from: { x: 0, y: 0 }, to: { x: 80, y: 160 } }).type, 'measurement-frame');
   assert.equal(measurementMessageSchema.parse({ type: 'measurement-frame', measurementId, sceneId, seq: 2, mode: 'move', from: { x: 0, y: 0 }, to: { x: 80, y: 160 } }).mode, 'move');
+  assert.equal(measurementMessageSchema.parse({ type: 'measurement-frame', measurementId, sceneId, seq: 0, mode: 'cursor', from: { x: 12.5, y: 18.25 }, to: { x: 12.5, y: 18.25 } }).mode, 'cursor');
   assert.equal(measurementMessageSchema.parse({ type: 'measurement-clear', measurementId, sceneId, seq: 3 }).type, 'measurement-clear');
   assert.equal(measurementMessageSchema.safeParse({ type: 'measurement-frame', measurementId, sceneId, seq: 1, mode: 'square', from: { x: NaN, y: 0 }, to: { x: 0, y: 0 } }).success, false);
 });

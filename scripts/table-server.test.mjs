@@ -169,6 +169,10 @@ test('shared rulers reach only viewers of the same scene and clear on finish or 
     outsider.send({ type: 'measurement-clear', measurementId: nextMeasurementId, sceneId, seq: 1 });
     const cleared = await Promise.all([player.wait(m => m.type === 'measurement-state' && m.measurements?.length === 0).catch(error => { throw new Error('player ruler clear: ' + error.message); }), gm.wait(m => m.type === 'measurement-state' && m.measurements?.length === 0).catch(error => { throw new Error('GM ruler clear: ' + error.message); })]);
     assert.deepEqual(cleared.map(value => value.measurements), [[], []]);
+    const cursorId=crypto.randomUUID();outsider.send({type:'measurement-frame',measurementId:cursorId,sceneId,seq:0,mode:'cursor',from:{x:213.25,y:187.5},to:{x:213.25,y:187.5}});
+    const cursor=await player.wait(m=>m.type==='measurement-state'&&m.measurements?.some(value=>value.measurementId===cursorId));
+    assert.equal(cursor.measurements.find(value=>value.measurementId===cursorId).name,'Visitor');assert.equal(cursor.measurements.find(value=>value.measurementId===cursorId).from.x,213.25);
+    outsider.send({type:'measurement-clear',measurementId:cursorId,sceneId,seq:1});await player.wait(m=>m.type==='measurement-state'&&m.measurements?.length===0);
     const create = { id: crypto.randomUUID(), type: 'scene-create', sceneId: master.scene.id, baseRevision: master.scene.revision, expectedRoomRevision: master.roomRevision, name: 'Preparation' };
     gm.send({ type: 'command', command: create });
     const preparation = await gm.wait(m => m.type === 'snapshot' && m.commandId === create.id).catch(error => { throw new Error('create preparation: ' + error.message); });

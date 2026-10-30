@@ -50,6 +50,13 @@ test('motion interpolation is continuous, finishes at canonical position and res
   assert.deepEqual(store.target({ id: 'token' }), { x: 300, y: 200 });
   assert.deepEqual(store.position('token', { x: 200, y: 100 }, 10000), { x: 200, y: 100 });
 });
+test('echoed own motion event keeps its local track and does not mark it as remote', () => {
+  const store = new MotionStore(), token = { id: 'token', x: 0, y: 0 };
+  store.update('token', 'own-motion', { x: 40, y: 30 }, token, { local: true, now: 10 });
+  store.update('token', 'own-motion', { x: 40, y: 30 }, token, { userId: 'self', name: 'Я', now: 20 });
+  assert.equal(store.tracks.get('token').local, true);
+  assert.deepEqual(store.target(token), { x: 40, y: 30 });
+});
 test('motion protocol rejects non-finite, out-of-map and malformed frames', () => {
   const ids = { motionId: crypto.randomUUID(), sceneId: crypto.randomUUID(), tokenId: crypto.randomUUID(), expectedVersion: 0 };
   assert.equal(motionMessageSchema.safeParse(frame(ids, 1, NaN, 50)).success, false);

@@ -5,6 +5,14 @@ test('initiative sorts descending and resolves ties stably by explicit GM order'
   const entries=[{id:'a',total:12,tieOrder:2},{id:'b',total:18,tieOrder:1},{id:'c',total:12,tieOrder:0}];
   assert.deepEqual(combat.sortInitiative?.(entries,'manual').map(e=>e.id),['b','c','a']);
 });
+test('active owner can attack with an owned pet, AC gates damage and temporary HP absorbs it',()=>{
+  const scene={tokens:[{id:'pet',name:'Питомец',ownerId:'p',hp:12,maxHp:12,tempHp:2,ac:12,version:0},{id:'foe',name:'Враг',ownerId:null,hp:9,maxHp:9,tempHp:2,ac:15,version:0}],combat:{...combat.emptyCombat(),running:true,round:1,currentId:'pet-entry',entries:[{id:'pet-entry',tokenId:'pet',roll:17,total:17,tieOrder:0,tieRoll:null},{id:'foe-entry',tokenId:'foe',roll:9,total:9,tieOrder:1,tieRoll:null}]}};
+  const command={type:'combat-attack',attackerTokenId:'pet',targetTokenId:'foe',attackFormula:'d20+3',damageFormula:'1d6+1'};
+  assert.equal(combat.combatCommandSchema.parse({...command,id:crypto.randomUUID(),attackerTokenId:crypto.randomUUID(),targetTokenId:crypto.randomUUID(),baseRevision:0}).type,'combat-attack');
+  const hit=combat.applyCombat(scene,command,{userId:'p',role:'player'},sides=>sides===20?12:6);assert.equal(hit.tokens[1].hp,4);assert.equal(hit.tokens[1].tempHp,0);assert.equal(hit.combat.lastAttack.hit,true);assert.equal(hit.combat.lastAttack.damageTotal,7);
+  const miss=combat.applyCombat(scene,{...command,attackFormula:'d20-20'},{userId:'p',role:'player'},()=>1);assert.equal(miss.tokens[1].hp,9);assert.equal(miss.combat.lastAttack.hit,false);
+  assert.throws(()=>combat.applyCombat(scene,command,{userId:'other',role:'player'},()=>20));
+});
 test('turns wrap rounds, expire round effects and remove current participant safely',()=>{
   const scene={tokens:[{id:'ta',ownerId:'p',initiativeMod:2,effects:[{id:'e',name:'Bless',rounds:1}],statuses:[]},{id:'tb',ownerId:null,initiativeMod:0}],combat:{running:true,round:1,currentId:'a',tiePolicy:'manual',entries:[{id:'a',tokenId:'ta',roll:10,total:12,tieOrder:0,tieRoll:null},{id:'b',tokenId:'tb',roll:5,total:5,tieOrder:1,tieRoll:null}]}};
   const gm={userId:'gm',role:'master'};

@@ -40,7 +40,7 @@ export class MotionStore {
   update(tokenId: string, motionId: string, point: MotionPoint, fallback: MotionPoint, options: { local?: boolean; duration?: number; userId?: string; name?: string; now?: number } = {}) {
     const now = options.now ?? performance.now();
     const existing = this.tracks.get(tokenId);
-    if (existing?.local && !options.local && existing.motionId !== motionId) return;
+    if (existing?.local && !options.local) return;
     this.tracks.set(tokenId, { motionId, from: this.position(tokenId, fallback, now), target: point, started: now,
       duration: options.duration ?? (options.local ? 0 : 85), expires: now + MOTION_LEASE_MS + 1000, local: !!options.local, userId: options.userId, name: options.name });
   }

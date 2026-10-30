@@ -7,13 +7,13 @@ export type AreaMode = Exclude<MeasureMode, 'move'>;
 export const measurementMessageSchema = z.object({
   type: z.enum(['measurement-frame', 'measurement-clear']),
   measurementId: z.string().uuid(), sceneId: z.string().uuid(), seq: z.number().int().nonnegative(),
-  mode: z.enum(['line', 'cone', 'sphere', 'square', 'move']).optional(),
+  mode: z.enum(['line', 'cone', 'sphere', 'square', 'move', 'cursor']).optional(),
   from: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
   to: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
 }).superRefine((value, ctx) => {
   if (value.type === 'measurement-frame' && (!value.mode || !value.from || !value.to)) ctx.addIssue({ code: 'custom', message: 'Measurement frame is incomplete' });
 });
-export type SharedMeasurement = { measurementId: string; sceneId: string; userId: string; name: string; mode: MeasureMode; from: Point; to: Point; seq: number };
+export type SharedMeasurement = { measurementId: string; sceneId: string; userId: string; name: string; mode: MeasureMode | 'cursor'; from: Point; to: Point; seq: number };
 
 function assertGridSize(gridSize: number) {
   if (!Number.isFinite(gridSize) || gridSize <= 0) throw new RangeError('Размер клетки должен быть положительным числом.');

@@ -116,8 +116,9 @@ export async function hostedMessage(env: HostedEnv, request: Request, client: Ho
       await db.prepare('DELETE FROM test_table_measurements WHERE campaign_id=? AND user_id=? AND client_id=? AND measurement_id=? AND seq<?').bind(client.campaignId, actor.actor.userId, client.id, event.measurementId, event.seq).run();
     } else {
       if (!event.mode || !event.from || !event.to || event.from.x < 0 || event.from.y < 0 || event.to.x < 0 || event.to.y < 0 || event.from.x > scene.width || event.to.x > scene.width || event.from.y > scene.height || event.to.y > scene.height) throw new CommandError('invalid', 'Координаты измерения вне сцены.');
+      const point = (value: {x:number;y:number}) => event.mode === 'cursor' ? value : snapMeasurePoint(value, scene.gridSize);
       const payload = { measurementId: event.measurementId, sceneId: event.sceneId, userId: actor.actor.userId, name: actor.actor.name, mode: event.mode,
-        from: snapMeasurePoint(event.from, scene.gridSize), to: snapMeasurePoint(event.to, scene.gridSize), seq: event.seq };
+        from: point(event.from), to: point(event.to), seq: event.seq };
       await db.prepare(`DELETE FROM test_table_measurements WHERE campaign_id=? AND user_id=? AND client_id<>? AND NOT EXISTS(SELECT 1 FROM test_table_peers WHERE client_id=test_table_measurements.client_id AND expires>?)`).bind(client.campaignId, actor.actor.userId, client.id, Date.now()).run();
       await db.prepare(`INSERT INTO test_table_measurements(campaign_id,user_id,client_id,scene_id,measurement_id,payload,seq,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(campaign_id,user_id) DO UPDATE SET scene_id=excluded.scene_id,measurement_id=excluded.measurement_id,payload=excluded.payload,seq=excluded.seq,updated_at=excluded.updated_at WHERE test_table_measurements.client_id=excluded.client_id AND (test_table_measurements.measurement_id=excluded.measurement_id AND test_table_measurements.seq<excluded.seq OR excluded.seq=0)`).bind(client.campaignId, actor.actor.userId, client.id, event.sceneId, event.measurementId, JSON.stringify(payload), event.seq, Date.now()).run();
     }
