@@ -5,19 +5,20 @@ test('initiative sorts descending and resolves ties stably by explicit GM order'
   const entries=[{id:'a',total:12,tieOrder:2},{id:'b',total:18,tieOrder:1},{id:'c',total:12,tieOrder:0}];
   assert.deepEqual(combat.sortInitiative?.(entries,'manual').map(e=>e.id),['b','c','a']);
 });
-test('active owner can attack with an owned pet, AC gates damage and temporary HP absorbs it',()=>{
-  const scene={tokens:[{id:'pet',name:'Питомец',ownerId:'p',hp:12,maxHp:12,tempHp:2,ac:12,version:0},{id:'foe',name:'Враг',ownerId:null,hp:9,maxHp:9,tempHp:2,ac:15,version:0}],combat:{...combat.emptyCombat(),running:true,round:1,currentId:'pet-entry',entries:[{id:'pet-entry',tokenId:'pet',roll:17,total:17,tieOrder:0,tieRoll:null},{id:'foe-entry',tokenId:'foe',roll:9,total:9,tieOrder:1,tieRoll:null}]}};
-  const command={type:'combat-attack',attackerTokenId:'pet',targetTokenId:'foe',attackFormula:'d20+3',damageFormula:'1d6+1'};
-  assert.equal(combat.combatCommandSchema.parse({...command,id:crypto.randomUUID(),attackerTokenId:crypto.randomUUID(),targetTokenId:crypto.randomUUID(),baseRevision:0}).type,'combat-attack');
-  const hit=combat.applyCombat(scene,command,{userId:'p',role:'player'},sides=>sides===20?12:6);assert.equal(hit.tokens[1].hp,4);assert.equal(hit.tokens[1].tempHp,0);assert.equal(hit.combat.lastAttack.hit,true);assert.equal(hit.combat.lastAttack.damageTotal,7);
-  const miss=combat.applyCombat(scene,{...command,attackFormula:'d20-20'},{userId:'p',role:'player'},()=>1);assert.equal(miss.tokens[1].hp,9);assert.equal(miss.combat.lastAttack.hit,false);
-  assert.throws(()=>combat.applyCombat(scene,command,{userId:'other',role:'player'},()=>20));
+test('combat automation is removed while initiative and manual tracker operations remain',()=>{
+  assert.equal(combat.combatCommandSchema.options.map(option=>option.shape.type.value).includes('combat-attack'),false);
+  const scene={tokens:[{id:'pc',ownerId:'player',hp:0,initiativeMod:2,effects:[{id:'e',name:'Bless',rounds:1}],statuses:[]},{id:'npc',ownerId:null,hp:0,initiativeMod:1,effects:[],statuses:[]}],combat:{running:true,round:1,currentId:'pc-entry',tiePolicy:'manual',entries:[{id:'pc-entry',tokenId:'pc',roll:10,total:12,tieOrder:0,tieRoll:null},{id:'npc-entry',tokenId:'npc',roll:8,total:9,tieOrder:1,tieRoll:null}]}};
+  const reconciled=combat.reconcileCombat(scene,scene);
+  assert.deepEqual(reconciled.combat.entries.map(entry=>entry.tokenId),['pc']);
+  assert.equal(reconciled.combat.currentId,'pc-entry');
+  let next=combat.applyCombat(reconciled,{type:'combat-next'},{userId:'gm',role:'master'});
+  assert.equal(next.combat.round,2);assert.equal(next.tokens[0].effects[0].rounds,1);
 });
-test('turns wrap rounds, expire round effects and remove current participant safely',()=>{
+test('turns wrap rounds without expiring effects and remove current participant safely',()=>{
   const scene={tokens:[{id:'ta',ownerId:'p',initiativeMod:2,effects:[{id:'e',name:'Bless',rounds:1}],statuses:[]},{id:'tb',ownerId:null,initiativeMod:0}],combat:{running:true,round:1,currentId:'a',tiePolicy:'manual',entries:[{id:'a',tokenId:'ta',roll:10,total:12,tieOrder:0,tieRoll:null},{id:'b',tokenId:'tb',roll:5,total:5,tieOrder:1,tieRoll:null}]}};
   const gm={userId:'gm',role:'master'};
   let next=combat.applyCombat(scene,{type:'combat-next'},gm);assert.equal(next.combat.currentId,'b');assert.equal(next.combat.round,1);
-  next=combat.applyCombat(next,{type:'combat-next'},gm);assert.equal(next.combat.currentId,'a');assert.equal(next.combat.round,2);assert.equal(next.tokens[0].effects.length,0);
+  next=combat.applyCombat(next,{type:'combat-next'},gm);assert.equal(next.combat.currentId,'a');assert.equal(next.combat.round,2);assert.equal(next.tokens[0].effects[0].rounds,1);
   next=combat.applyCombat(next,{type:'combat-remove',participantId:'a'},gm);assert.equal(next.combat.currentId,'b');
   assert.throws(()=>combat.applyCombat(scene,{type:'combat-next'},{userId:'p',role:'player'}));
 });
@@ -66,13 +67,13 @@ test('numeric damage spends temporary HP first and numeric healing caps at maxim
   assert.equal(healed.tokens[0].hp,12);assert.equal(healed.tokens[0].tempHp,0);
   assert.throws(()=>combat.combatCommandSchema.parse({id:crypto.randomUUID(),baseRevision:0,type:'combat-adjust',tokenId:'t',expectedVersion:0,operation:'damage',amount:0}));
   const fatal=combat.applyCombat(healed,{type:'combat-adjust',tokenId:'t',expectedVersion:healed.tokens[0].version,operation:'damage',amount:99},gm);
-  assert.equal(fatal.tokens[0].hp,0);assert.equal(fatal.combat.entries.length,0);
+  assert.equal(fatal.tokens[0].hp,0);assert.equal(fatal.combat.entries.length,1);
 });
 
-test('optional tie rerolls are server generated and explicit NPC groups share one initiative roll',()=>{
+test('ties remain manual and explicit NPC groups share one initiative roll',()=>{
   const entries=[{id:'a',tokenId:'ta',roll:null,total:null,tieOrder:0,tieRoll:null},{id:'b',tokenId:'tb',roll:null,total:null,tieOrder:1,tieRoll:null}],tokens=[{id:'ta',ownerId:null,initiativeMod:0},{id:'tb',ownerId:null,initiativeMod:0}],gm={userId:'g',role:'master'};
   let scene={tokens,combat:{running:false,round:0,currentId:null,tiePolicy:'reroll',entries}},numbers=[10,10,4,17];
-  const result=combat.applyCombat(scene,{type:'combat-roll'},gm,()=>numbers.shift());assert.deepEqual(combat.sortInitiative(result.combat.entries,'reroll').map(e=>e.id),['b','a']);
+  const result=combat.applyCombat(scene,{type:'combat-roll'},gm,()=>numbers.shift());assert.deepEqual(combat.sortInitiative(result.combat.entries,'reroll').map(e=>e.id),['a','b']);
   let calls=0;scene={...scene,tokens:tokens.map(t=>({...t,initiativeGroup:'goblins'})),combat:{...scene.combat,tiePolicy:'manual'}};
   const grouped=combat.applyCombat(scene,{type:'combat-roll'},gm,()=>{calls++;return 8;});assert.equal(calls,1);assert.deepEqual(grouped.combat.entries.map(e=>e.total),[8,8]);
 });
@@ -108,4 +109,27 @@ test('owner cannot roll initiative for a token whose statistics GM has hidden',(
  const scene={tokens:[{id:'t',ownerId:'p',hideStats:true,initiativeMod:7}],combat:{...combat.emptyCombat(),entries:[{id:'e',tokenId:'t',roll:null,total:null,tieOrder:0,tieRoll:null}]}};
  assert.throws(()=>combat.applyCombat(scene,{type:'combat-roll',participantId:'e'},{role:'player',userId:'p'},()=>12));
  assert.equal(combat.applyCombat(scene,{type:'combat-roll',participantId:'e'},{role:'master',userId:'g'},()=>12).combat.entries[0].total,19);
+});
+
+test('zero HP removes master-owned tokens but retains player-owned tokens through room commands',async()=>{
+ const {createRoom,applyRoomCommand,roomCommandSchema}=await import('../lib/table/room.ts');
+ const gm={userId:crypto.randomUUID(),name:'GM',role:'master'},player={userId:crypto.randomUUID(),name:'P',role:'player'},roster=[gm,player];let room=createRoom(crypto.randomUUID(),roster);
+ const dispatch=input=>{const scene=room.scenes[0].scene;room=applyRoomCommand(room,roomCommandSchema.parse({id:crypto.randomUUID(),sceneId:scene.id,baseRevision:scene.revision,...input}),gm,roster).data;};
+ const tokens=room.scenes[0].scene.tokens.filter(t=>t.ownerId);
+ for(const token of tokens)dispatch({type:'combat-add',tokenId:token.id});
+ dispatch({type:'combat-roll'});dispatch({type:'combat-start'});
+ for(const token of tokens){const current=room.scenes[0].scene.tokens.find(t=>t.id===token.id);dispatch({type:'combat-adjust',tokenId:token.id,expectedVersion:current.version,operation:'damage',amount:10000});}
+ const entries=room.scenes[0].scene.combat.entries;
+ assert.equal(entries.some(e=>room.scenes[0].scene.tokens.find(t=>t.id===e.tokenId).ownerId===gm.userId),false);
+ assert.equal(entries.some(e=>room.scenes[0].scene.tokens.find(t=>t.id===e.tokenId).ownerId===player.userId),true);
+});
+test('manual effects do not change statuses and changing a modifier does not rewrite rolled initiative',()=>{
+ const scene={tokens:[{id:'t',ownerId:'p',hp:10,maxHp:10,version:0,initiativeMod:2,statuses:[],effects:[]}],combat:{...combat.emptyCombat(),entries:[{id:'e',tokenId:'t',roll:10,total:12,tieOrder:0,tieRoll:null}]}};
+ const gm={userId:'gm',role:'master'};
+ const added=combat.applyCombat(scene,{type:'effect-add',tokenId:'t',expectedVersion:0,effect:{id:'fx',name:'Effect',rounds:1,condition:'prone'}},gm);
+ assert.deepEqual(added.tokens[0].statuses,[]);
+ const updated=combat.applyCombat(added,{type:'vitals',tokenId:'t',expectedVersion:1,hp:10,maxHp:10,ac:10,initiativeMod:5,hidden:false,shareStats:false,initiativeGroup:''},gm);
+ assert.equal(updated.combat.entries[0].total,12);
+ const removed=combat.applyCombat(updated,{type:'effect-remove',tokenId:'t',expectedVersion:2,effectId:'fx'},gm);
+ assert.equal(removed.tokens[0].effects.length,0);
 });

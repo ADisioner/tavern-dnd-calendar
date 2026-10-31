@@ -63,7 +63,8 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
     if (!onMeasurement) return;
     if (!point) { const active=cursorTrack.current; if(active)onMeasurement({type:'measurement-clear',measurementId:active.measurementId,sceneId:scene.id,seq:++active.seq}); cursorTrack.current=null; return; }
     const active=cursorTrack.current??(cursorTrack.current={measurementId:crypto.randomUUID(),seq:-1});
-    onMeasurement({type:'measurement-frame',measurementId:active.measurementId,sceneId:scene.id,seq:++active.seq,mode:'cursor',from:point,to:point});
+    const bounded=drawingPoint(point);
+    onMeasurement({type:'measurement-frame',measurementId:active.measurementId,sceneId:scene.id,seq:++active.seq,mode:'cursor',from:bounded,to:bounded});
   };
   const updateMeasurePreview = (next: MeasureGesture | null) => { measurePreviewRef.current = next; setMeasurePreview(next); };
   const [movementPreview, setMovementPreview] = useState<{ tokenId: string; from: Point; to: Point } | null>(null);
@@ -100,7 +101,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       const point = drawingPoint(pointer);
       next = { kind: 'draw', drawing: { id: crypto.randomUUID(), color: brushColor, width: brushWidth, points: [point.x, point.y] } };
     } else if (tool === 'measure' && measureMode !== 'move') {
-      const point = snapMeasurePoint(pointer, scene.gridSize);
+      const point = drawingPoint(snapMeasurePoint(pointer, scene.gridSize));
       next = { kind: 'measure', mode: measureMode, from: point, to: point };
       clearSharedMeasurement();
       const shared = { measurementId: crypto.randomUUID(), seq: 0 }; sharedMeasurement.current = shared;
@@ -120,7 +121,7 @@ export default function TableCanvas({ scene, actor, selectedId, selectedIds, too
       if (points.length >= 2048 || (points.at(-2) === bounded.x && points.at(-1) === bounded.y)) return;
       next = { kind: 'draw', drawing: { ...current.drawing, points: [...points, bounded.x, bounded.y] } };
     } else if (current.kind === 'measure') {
-      next = { ...current, to: snapMeasurePoint(point, scene.gridSize) };
+      next = { ...current, to: drawingPoint(snapMeasurePoint(point, scene.gridSize)) };
       const shared = sharedMeasurement.current;
       if (shared) onMeasurement?.({ type: 'measurement-frame', measurementId: shared.measurementId, sceneId: scene.id, seq: ++shared.seq, mode: next.mode, from: next.from, to: next.to });
     }

@@ -132,7 +132,7 @@ export function applyTableCommand(scene: TableScene, command: TableCommand, acto
     if(command.type==='erase'&&scene.fog?.enabled&&!projectScene(scene,actor).drawings.some(d=>d.id===command.drawingId))throw new CommandError('forbidden','Область не видна.');
   }
   const next=applyRawTableCommand(scene,command,actor,roster,options);
-  return exploreScene(reconcileCombat(scene,next), roster);
+  return exploreScene(reconcileCombat(scene,next,roster), roster);
 }
 function applyRawTableCommand(scene: TableScene, command: TableCommand, actor: TableActor, roster: TableMember[],options:{random?:(sides:number)=>number}): TableScene {
   if (actor.role !== 'master' && actor.role !== 'player') throw new CommandError('forbidden', 'Нет доступа к изменению сцены.');
@@ -142,7 +142,7 @@ function applyRawTableCommand(scene: TableScene, command: TableCommand, actor: T
   const combatCommand=combatCommandSchema.safeParse(command);
   if(combatCommand.success){
     if(command.baseRevision!==scene.revision)throw new CommandError('conflict','Бой изменился. Повторите действие.');
-    try{return sceneSchema.parse(applyCombat(next,combatCommand.data,actor,options.random));}
+    try{return sceneSchema.parse(applyCombat(next,combatCommand.data,actor,options.random,roster));}
     catch(error){if(error instanceof Error)throw new CommandError((error as Error & {code?:string}).code??'invalid',error.message);throw error;}
   }
   if (['fog-config','wall-set','wall-remove','fog-area','fog-reset','vision'].includes(command.type)) {
